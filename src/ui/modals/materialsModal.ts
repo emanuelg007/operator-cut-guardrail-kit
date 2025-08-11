@@ -1,0 +1,1 @@
+export function materialsModal() {/* stub */}

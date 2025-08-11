@@ -1,0 +1,29 @@
+{
+  "files": {
+    "src/core/event-bus.ts": [
+      "on",
+      "off",
+      "emit"
+    ],
+    "src/core/types.ts": [
+      "CanonicalRow",
+      "Material",
+      "Settings",
+      "JobState"
+    ],
+    "src/csv/parse-csv.ts": [
+      "parseCsv"
+    ],
+    "src/ui/modals/header-map-modal.ts": [
+      "openHeaderMapModal"
+    ],
+    "src/index.ts": [
+      "on",
+      "off",
+      "emit",
+      "EVENTS",
+      "parseCsv",
+      "openHeaderMapModal"
+    ]
+  }
+}

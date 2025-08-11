@@ -1,0 +1,453 @@
+Operator Cut Program — Master Design Prompt (MVP v1)
+
+Use this prompt as a single source of truth to design and implement the app. It consolidates all requirements, decisions, and constraints gathered so far.
+
+Goal & Vision (One‑paragraph brief)
+
+Build a front‑end‑only, TypeScript application for cabinet/board cutting optimization. Operators upload a cutting‑list CSV, map headers to a canonical schema, validate, auto‑nest components with Maximal Rectangles, and drive production via an interactive SVG cutting diagram plus fast label printing (Zebra ZPL or browser). The app is modular (one responsibility per file), touch‑friendly, and stable: each function lives in its own file and can be swapped without impacting the rest. Materials are managed in a Master Materials library. MVP focuses on CSV import → validate → nest → visualize → print (labels & sheets). Pricing/quotes and external layout imports are stubbed for later.
+
+Non‑negotiable Constraints
+
+Language: TypeScript (strict). No backend required.
+
+Rendering: SVG for boards/parts. HTML for dialogs/labels (or ZPL for Zebra).
+
+Architecture: One function per file; pure logic separated from DOM; event bus.
+
+Persistence: IndexedDB/localStorage for sessions; Save/Load project to/from JSON.
+
+Touch + Mouse: Large hit targets, pinch‑to‑zoom, on‑screen keyboard toggle.
+
+Units: Project‑wide units (mm/in). Internally store mm; convert at UI.
+
+MVP Scope (Included)
+
+CSV Intake
+
+Upload a single cutting‑list CSV per session (mixed delimiters supported).
+
+Header mapping popup (System ↔ Uploaded) with live preview (first 15 rows, rest scrollable).
+
+Validation (required fields, units, sizes). Mixed‑unit files warned with option to resolve.
+
+Normalize to canonical schema (see Data Model).
+
+Master Materials Library (Popup)
+
+Boards CRUD; one stock size per material (edit allowed).
+
+Fields: Name, Length, Width, Thickness, Grain(Y/N), AllowRotation(Y/N), KerfOverride?, Cost (for future pricing), StockQty, SKU/Code.
+
+Import/Export Master Materials CSV; duplicate handling: Prompt user (merge/replace).
+
+Lock materials during a job; versioning enabled (draft vs active).
+
+Nesting
+
+Maximal Rectangles (Best Area Fit) with: global kerf; no extra spacing, edge margin/board clean per side before nesting; grain lengthwise; per‑part AllowRotate overrides; hybrid packing to minimize waste across sheets.
+
+Auto‑create new sheets as needed. Unplaceable parts appear in list with reasons (not in SVG).
+
+Visualization (SVG)
+
+Tabs per material; sheet pager (1 of N). Board outline, grain indicator (board‑level only), dashed cut lines, L×W on top & left edges, centered names, edging markers.
+
+Zoom/pan (wheel/drag, pinch on touch). Auto‑zoom/highlight on selection. Double‑click to select part (avoids pan conflicts). Status colors: purple=selected, blue=printed, default=idle. Footer: Done/Reset per sheet.
+
+Printing
+
+Sheets: Popup to choose scope (current sheet/material/all) → open PDF preview → user prints via OS handler.
+
+Labels: Direct print (no confirm). ZPL direct if Zebra mode set; otherwise browser print. Status auto‑marks as Printed; also support batch label ranges.
+
+Print Tracker: interactive SVG per sheet (no PDF). Clicking a part opens popup with Print, Undo, Close (no state toggle by click alone).
+
+Settings (Popup + Tab)
+
+Units; global kerf; board clean margin (mm per side before nesting); font family/size/color presets for SVG, PDF, and clickable SVG; label size (default 100×50mm, custom allowed); Zebra vs Browser printer; autosave interval; zoom sensitivity; shortcuts.
+
+Customer DB & Reports (MVP basics)
+
+Customer fields: Name, Phone, Email, Address, Reference/PO, Due date. Local searchable DB; option to erase (POPIA).
+
+Reports: Job Summary, Material Usage, Label Run Log. Export PDF & CSV/XLSX.
+
+Project I/O
+
+New (clear all), Open/Save/Save As JSON; Export: PDF/SVG/DXF/CSV/JSON; optional ZIP of all.
+
+Autosave (user‑defined; default 1 min). Prompt to restore last session. Confirm on close with unsaved changes.
+
+Error Handling & Diagnostics
+
+Friendly toasts + details drawer; “Export diagnostics” bundle (settings + logs + current job JSON).
+
+Out of Scope (Stub for later)
+
+Pricing engine & quote PDFs (placeholders only, but store cost fields in libraries).
+
+External layout imports (e.g., MaxCut/Opti… PDF→CSV extraction). Add a placeholder module.
+
+Manual nudging/dragging of parts (nesting is fully automated in MVP).
+
+Primary User Flow (Happy Path)
+
+Download CSV template (global template with all fields).
+
+Upload cutting‑list CSV → Header Mapping Popup (side‑by‑side mapping; live preview; save mapping for this job; do not keep per‑client profiles).
+
+Validation runs (required fields; unit match; sizes; materials). If unknown material → popup to create new material.
+
+Optimize → MaxRects produces sheets per material, computes waste.
+
+Review in SVG tabs. Click table row or part → auto‑zoom & highlight (+ popup for details/print).
+
+Print:
+
+Sheets: choose scope → PDF preview → OS print.
+
+Labels: direct print (ZPL/browser). Auto‑mark as Printed.
+
+Print Tracker for on‑screen tracking.
+
+Save project or Export (PDF/SVG/DXF/CSV/JSON).
+
+Top Navigation & Menus
+
+File
+
+New Project (clear all), Open (.json), Save, Save As…
+
+Import: Cutting List CSV (single file), Master Materials CSV, Master Edging CSV
+
+Export: Master Materials CSV/Edging CSV; Job as PDF/SVG/DXF/CSV report/Project JSON; ZIP of all
+
+Session & Data: Backup/Restore all app data (local)
+
+Print: current sheet / current material / whole job; Batch labels (range filter)
+
+Edit
+
+Duplicate component; Delete component; Batch edit (size, material, edging, notes)
+
+Search (name/code/size/material); Filter by material/size/status
+
+Reopen header mapping for last import; Run validation; Fix units (auto mm↔in using job setting)
+
+On‑screen keyboard: numeric pad (dims), full keyboard (all inputs), per‑field toggle
+
+Material Library (Popup)
+
+Boards: Add/Edit/Archive; fields above; Lock during job; Versioning on changes
+
+Edging: Add/Edit; Name, Thickness, Color/Code, Cost/m, Notes
+
+Import/Export materials CSV (same headers as template). Global library with "Apply to current job" button
+
+Pricing (Placeholder)
+
+Models available later: per sheet/area/cut length/part/edge LM; VAT; rounding; quotes
+
+Help
+
+Troubleshooting (CSV tips, mapping, printer); Export diagnostics; Contact link; About (version, changelog, licenses, privacy)
+
+View/Tools
+
+Day/Night, Zoom (fit/100%/persist), Show/Hide (grain arrows, dimensions, IDs, kerf lines), Timer widget, Optimization panel (algorithm choice, allow rotation, thresholds)
+
+Data Model (Canonical Schema)
+
+Canonical fields after mapping
+
+PartID (generated), Name, MaterialCode, Thickness, Length, Width, Qty,
+
+Grain (Y/N), AllowRotate (Y/N), EdgeL1, EdgeL2, EdgeW1, EdgeW2,
+
+Notes1, Notes2
+
+Customer: Name, Phone, Email, Address, Reference/PO, DueDate
+
+Material (Board): Id, Name, BoardLength, BoardWidth, Thickness, Grain(Y/N), AllowRotation(Y/N), KerfOverride?, CostPerSheet?, StockQty?, SKU?
+
+Status per part instance: pending | printed | done
+
+Store all lengths internally in mm; convert for display.
+
+
+
+
+
+
+
+File/Module Architecture (TypeScript)
+
+
+
+/public
+  index.html
+  /assets/{icons,fonts}
+/src
+  /core
+    eventBus.ts           // pub/sub: on/off/emit
+    store.ts              // state + reducers (job, sheets, settings, statuses)
+    persist.ts            // IndexedDB/localStorage; project save/load
+    types.ts              // interfaces for Component, Material, Sheet, Settings, etc.
+  /csv
+    detectDialect.ts      // delimiter/BOM/quote detection
+    parseCsv.ts           // tolerant parser → raw rows
+    mapHeaders.ts         // popup UI logic + apply mapping → canonical rows
+    validateRows.ts       // required fields, units, size sanity, material presence
+    normalize.ts          // trim/convert units; qty handling; dedupe identical rows
+  /materials
+    library.ts            // global library CRUD (boards/edging)
+    io.ts                 // import/export Master Materials/Edging CSV
+    rules.ts              // resolve kerf, grain, rotation per material
+  /nesting
+    maxRects.ts           // Best Area Fit; pluggable scoring
+    constraints.ts        // kerf, board clean margin, grain/rotation enforcement
+    packJob.ts            // group by material/size; create sheets; compute waste
+    metrics.ts            // waste %, cut length, sheet stats
+  /render
+    boardSvg.ts           // render board + parts + cuts; status styling
+    edgingGlyphs.ts       // L1/L2/W1/W2 visuals + legend
+    dims.ts               // top/left dimension labels
+    viewport.ts           // pan/zoom, fit, limits (pinch on touch)
+  /ui
+    navbar.ts             // File/Edit/Materials/Pricing/Help
+    tabs.ts               // per material tabs
+    sheetNav.ts           // pager (1 of N), Done/Reset
+    componentList.ts      // side panel; filter/search; status colors
+    modals/
+      headerMapModal.ts   // mapping dialog (15‑row preview)
+      componentModal.ts   // view/edit component; Print/Undo/Close
+      materialsModal.ts   // boards & edging
+      settingsModal.ts    // all settings incl. fonts/colors
+      printModal.ts       // sheet scope → PDF preview
+    toasts.ts             // success/warn/error
+    keyboard.ts           // on‑screen keyboard toggle
+  /printing
+    labels.ts             // 100×50 by default; custom sizes; wrap notes
+    zebra.ts              // ZPL direct (toggle in settings)
+    sheetsPdf.ts          // diagram/list/summary PDF assembly
+    tracker.ts            // interactive SVG print tracker (per sheet)
+  /pricing
+    engine.ts             // placeholder stubs (later)
+  /io
+    projectIO.ts          // Save/Load project JSON; optional ZIP
+  /utils
+    units.ts, geom.ts, id.ts, format.ts
+main.ts                   // bootstrap wiring
+
+
+
+
+
+
+Contracts & Boundaries
+
+CSV & Nesting modules are pure (no DOM). Render modules receive data → return DOM/SVG elements.
+
+Print modules return HTML/ZPL strings; UI decides how/where to send them.
+
+Cross‑module communication via eventBus only.
+
+CSV Import & Mapping — Detailed
+
+On upload, detect delimiter (semicolon/comma/mixed), quotes, BOM; show Mapping Popup:
+
+Left: Canonical fields; Right: dropdowns of uploaded headers (by row number). Live 15‑row preview.
+
+Required: Name, Material, Length, Width, Quantity. Optional: EdgeL1/L2/W1/W2, Notes1/2, AllowRotate, Grain.
+
+Presets: offer Apply Last Mapping (global) for convenience; do not store per‑client profiles.
+
+Unit policy: Strict to project setting. If mismatch → show warning with one‑click Convert & Continue.
+
+Unknown/extra columns: let user choose to ignore or keep as metadata.
+
+Quantity handling: keep as quantity in data; expand to instances at nesting time.
+
+Dedupe identical rows (same name/size/material) if chosen.
+
+On success: commit normalized dataset to the job state; close modal.
+
+Nesting — Rules & Heuristics
+
+Algorithm: Maximal Rectangles (Best Area Fit), with tunable scoring (hook for future variants).
+
+Board Clean Margin: user‑defined mm to trim each side before placing parts.
+
+Kerf between parts only (no separate spacing). Edge margin derived from board clean.
+
+Grain: always lengthwise unless part’s AllowRotate=Yes (then allow 90°).
+
+Quantity distribution: hybrid optimization to minimize total waste across sheets (not strictly greedy).
+
+Unplaceable parts: never enter SVG; appear in list tagged red with reason(s). Operator edits part → click Re‑Optimize button.
+
+Waste color bands: green <10%, amber 10–15%, red >15%.
+
+SVG Visualization — Behavior
+
+Per‑material tabs; sheet pager. Board shows outer dims, board‑level grain indicator, dashed cut lines.
+
+Per‑part: centered name (wrapped), top/left L×W labels, edging markers (color/pattern/size), status styling.
+
+Interactions: wheel/drag zoom/pan; pinch on touch; double‑click selects part (purple outline + auto‑zoom); table selection syncs.
+
+Footer: Done / Reset buttons per sheet. Reset clears statuses; Done marks sheet complete.
+
+Printing & Labels — Flow & Layout
+
+Sheets: Popup → choose scope (current sheet / current material / whole job) → PDF preview → user prints via OS.
+
+Labels: Direct print; ZPL direct when Zebra mode; otherwise browser print. After label print, auto‑mark as Printed.
+
+Batch Labels: range or filter selection (current sheet/material/job).
+
+Overflow: Notes wrap onto multiple lines (no ellipses). Support QR/Barcode with component ID (toggle on).
+
+Custom label sizes in Settings; default 100×50 mm. No enforced margins (user can set).
+
+“Reprint last label”: Disabled (explicitly set No).
+
+Print Tracker (Interactive)
+
+One interactive SVG per sheet; no PDF export. Clicking a part opens popup: Print, Undo, Close. Batch marking supported (multi‑select in list).
+
+Status coloring synced with side list and persists in saved project.
+
+Settings — Complete List
+
+Units: mm/in; UI conversion; numeric precision: 2 decimals, no rounding rules beyond that.
+
+Nesting: kerf (global), board clean margin per side, algorithm variant, allow rotation (global default; still respect per‑part & material flags).
+
+Display: font family, size, color tokens for SVG/PDF/interactive; show/hide grain arrows, dims, IDs, kerf lines; day/night.
+
+Printing: paper size/orientation (default A4 Portrait), label size custom, printer mode (Browser/Zebra), Zebra model/DPI, label data toggles (QR, etc.).
+
+Persistence: autosave interval (default 1 min), restore last session on load, recent projects list size.
+
+Shortcuts: P=Print, N=Next sheet, Z=Zoom reset, F=Find part (and others as needed).
+
+Customer DB & Reports
+
+Customer DB: local, searchable; fields above. POPIA erase action.
+
+Reports: Job Summary, Material Usage, Label Run Log → PDF & CSV/XLSX.
+
+Persistence & Project Files
+
+Save/Load .json project (includes job data, statuses, settings, materials snapshot, nesting results). Optional ZIP of all.
+
+Exports: PDF pack, SVG per sheet, DXF outlines per sheet, CSV report (post‑nest with sheet numbers), Project JSON.
+
+Error Handling & Diagnostics
+
+Multi‑stage validation with friendly messages; console logs piped to a diagnostics panel.
+
+“Export diagnostics” bundle: anonymized project JSON + settings + recent errors.
+
+Accessibility & Performance
+
+Touch‑first (≥44px targets), keyboard accessible modals, color‑contrast safe themes.
+
+Virtualize long lists; chunked SVG updates; debounce resize/zoom.
+
+QA / Testing Plan
+
+Unit tests: csv.parse, header mapping, units conversion, constraints, maxRects packing (fixtures), label layout math.
+
+Visual snapshots: board SVG (per zoom), edging markers, labels.
+
+E2E happy path: Upload → Map → Validate → Nest → Print labels → Save → Reload → State identical.
+
+Acceptance Criteria (MVP)
+
+Can import a valid single CSV, map headers, and validate with clear feedback.
+
+Can create/edit materials; lock during job; version changes recorded.
+
+Can optimize into multiple sheets with MaxRects; grain/rotation/kerf/clean margin respected.
+
+SVG shows boards/parts with correct dimensions, labels, edging, and status colors; zoom/pan/dbl‑click select.
+
+Can print sheets (PDF) with scope selection; print labels directly (ZPL/browser); label fields match spec and auto‑mark printed.
+
+Print Tracker shows interactive per‑sheet SVG and syncs statuses.
+
+Settings apply to SVG/PDF/labels; autosave works; restore prompt appears; Save/Load project preserves state.
+
+Exports (PDF/SVG/DXF/CSV/JSON) function as described.
+
+Example CSV Templates (Headers Only)
+
+Cutting List CSV (global template)
+
+Name,MaterialCode,Thickness,Length,Width,Qty,Grain,AllowRotate,EdgeL1,EdgeL2,EdgeW1,EdgeW2,Notes1,Notes2
+
+Master Materials CSV
+
+Name,BoardLength,BoardWidth,Thickness,Grain,AllowRotation,KerfOverride,CostPerSheet,StockQty,SKU
+
+Master Edging CSV
+
+EdgeCode,Description,Thickness,ColorOrCode,CostPerMeter,Notes
+
+Deliverables for the Build Team
+
+Project scaffold exactly as in the File/Module Architecture. Each file = one responsibility.
+
+Typed interfaces in types.ts for all entities.
+
+Header Mapping Modal + CSV pipeline wired to Store.
+
+MaxRects engine + packer with constraints.
+
+SVG board renderer with viewport controls; component list; sheet nav.
+
+Printing modules (sheets PDF, labels, Zebra adapter) + Print Tracker.
+
+Settings modal with all controls wired; persistence & autosave.
+
+Exports (PDF/SVG/DXF/CSV/JSON) and Project Save/Load.
+
+Tests as per QA plan; basic docs (README: run, build, test).
+
+Notes & Rulings on Previously Ambiguous Items
+
+Unit policy: “Strict” to the project’s unit, but when mismatched, warn + offer convert (user decides).
+
+Mapping presets: provide Apply Last Mapping only (no per‑client profiles).
+
+After batch sheet PDF printing: do not auto‑mark printed. Use Tracker or batch mark in list.
+
+After label print: auto‑mark Printed.
+
+No manual nudging; re‑optimize button available.
+
+Unknown materials on import: prompt to create material via popup (no silent mapping).
+
+Kickoff Instructions (what to generate first)
+
+Scaffold folders/files (TypeScript) exactly per architecture; wire a tiny eventBus and store.
+
+Implement CSV upload → headerMapModal → validateRows → normalize pipeline (with live preview) and commit to state.
+
+Implement materials library (popup CRUD + CSV import/export; lock during job).
+
+Implement nesting (maxRects.ts, constraints.ts, packJob.ts) with board clean margin + kerf + grain/rotation rules.
+
+Implement boardSvg with viewport + selection sync + sheetNav + componentList.
+
+Implement printing (labels ZPL/browser, sheets PDF) and print tracker.
+
+Implement settings modal and persistence (autosave + Save/Load JSON).
+
+Add exports (PDF/SVG/DXF/CSV/JSON) and reports (Job Summary, Material Usage, Label Log).
+
+Add tests (unit + visual snapshots) and a README.
+
+When in doubt, follow: pure logic in /csv, /materials, /nesting; no DOM outside /render & /ui; communication via eventBus; state in store; everything typed.

@@ -1,0 +1,1 @@
+export function mapHeaders() {/* stub */}

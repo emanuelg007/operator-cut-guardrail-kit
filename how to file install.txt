@@ -1,0 +1,35 @@
+Ahh, thanks for the heads-up — you’re right, those links weren’t real before. I’ve rebuilt the kit and actually generated the files this time. You can grab them here:
+
+    Guardrails kit (ZIP) – everything wired up (contract, barrel, ESLint, TS, CI, event bus):
+    Download ZIP
+
+    One-page naming cheat sheet (PDF) – the quick “what to name things” page:
+    Download PDF
+
+What’s inside (highlights):
+
+    contract/allowed-exports.json — source of truth for filenames and exported names
+
+    src/index.ts — the barrel re-exporting only approved names
+
+    .eslintrc.cjs — no default exports, catch unresolved/unknown imports
+
+    scripts/check-exports.mjs — CI gate that fails if exports drift
+
+    .github/workflows/ci.yml — runs lint → typecheck → contract check
+
+    src/core/eventBus.ts — on/off/emit + Events constants (so devs never type raw strings)
+
+How to use:
+
+    Unzip into your repo.
+
+    npm ci
+
+    Run locally: npm run lint && npm run typecheck && npm run check:exports
+
+    Push — GitHub Actions will enforce the same checks on every PR.
+
+If you want me to add more files/exports to the contract (or tweak names), tell me and I’ll regenerate the kit so everything stays perfectly in sync with the spec.
+You said:
+ithoughtthats what this doea, whatdo you mean add more ?
