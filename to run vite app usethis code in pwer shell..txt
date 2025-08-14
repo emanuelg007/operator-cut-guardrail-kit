@@ -1,0 +1,2 @@
+cd C:\operator-cut-guardrail-kit
+npm run dev

@@ -1,50 +1,61 @@
-import { eventBus } from './core/eventBus'
-import { Events } from './core/events'
-import { parseCsv } from './csv/parseCsv'
+// src/main.ts
+import { on, emit } from "./core/eventBus";
+import { validateRequiredColumns } from "./csv/validateRows";
 
-const logEl = document.getElementById('log')!
-const btn = document.getElementById('importBtn') as HTMLButtonElement
+const input = document.getElementById("csvInput") as HTMLInputElement | null;
+const fileNameEl = document.getElementById("fileName") as HTMLElement | null;
+const statusEl = document.getElementById("status") as HTMLElement | null;
 
-function log(line: string) {
-  const time = new Date().toLocaleTimeString()
-  logEl.textContent += `\n[${time}] ${line}`
+function setStatus(msg: string, kind: "info" | "ok" | "err" = "info") {
+  if (!statusEl) return;
+  statusEl.textContent = msg;
+  statusEl.style.whiteSpace = "pre-line";
+  statusEl.style.color = kind === "ok" ? "green" : kind === "err" ? "crimson" : "inherit";
 }
 
-btn.addEventListener('click', () => {
-  eventBus.emit(Events.csvChooseFile)
-})
+if (!input) {
+  console.error("csvInput element not found in index.html");
+} else {
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) {
+      setStatus("No file uploaded");
+      return;
+    }
 
-let fileInput: HTMLInputElement | null = null
+    // Immediately show the file picked (so you never see “No file uploaded” now)
+    if (fileNameEl) fileNameEl.textContent = file.name;
+    setStatus(`📄 File selected: "${file.name}"\nReading…`, "info");
 
-eventBus.on(Events.csvChooseFile, () => {
-  if (!fileInput) {
-    fileInput = document.createElement('input')
-    fileInput.type = 'file'
-    fileInput.accept = '.csv,text/csv'
-    fileInput.style.display = 'none'
-    document.body.appendChild(fileInput)
-    fileInput.addEventListener('change', async () => {
-      const file = fileInput!.files?.[0]
-      if (!file) return
-      eventBus.emit(Events.csvFileSelected, file)
-      try {
-        const rows = await parseCsv(file)
-        eventBus.emit(Events.csvParsed, rows)
-      } catch (err) {
-        console.error(err)
-        log('CSV parse failed (see console).')
-      } finally {
-        fileInput!.value = ''
-      }
-    })
-  }
-  fileInput.click()
-})
+    try {
+      const text = await file.text();
 
-eventBus.on<File>(Events.csvFileSelected, (file) => {
-  log(`Selected file: ${file.name} (${file.size} bytes)`)
-})
+      // Very simple CSV header read (semicolon or comma)
+      const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) ?? "";
+      const delimiter = firstLine.includes(";") ? ";" : ",";
+      const headers = firstLine.split(delimiter).map(h => h.trim());
 
-eventBus.on<any[]>(Events.csvParsed, (rows) => {
-  log(`Parsed rows: ${rows.length}`)
-})
+      console.log("Detected headers from CSV:", headers);
+
+      // Validate headers against your custom list
+      validateRequiredColumns(headers);
+
+      // If we got here, validation passed. Count rows (non-empty lines minus header)
+      const rowCount = text
+        .split(/\r?\n/)
+        .slice(1)
+        .filter(l => l.trim().length > 0).length;
+
+      // Update UI and emit event
+      setStatus(
+        `📄 File: "${file.name}" (${rowCount} data rows)\n✅ All required columns found.`,
+        "ok"
+      );
+      emit("csv:uploaded", { name: file.name, size: file.size, text, delimiter, headers, rowCount });
+    } catch (err: any) {
+      console.error(err);
+      const msg = typeof err?.message === "string" ? err.message : String(err);
+      setStatus(`📄 File: "${file.name}"\n❌ ${msg}`, "err");
+    }
+  });
+}
