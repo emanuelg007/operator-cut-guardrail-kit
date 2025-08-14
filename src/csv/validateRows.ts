@@ -1,6 +1,17 @@
 // src/csv/validateRows.ts
 import { EXACT_HEADER_MAP, normalizeHeader } from "./aliases";
-
+// Helper: build a lookup of normalized header -> index
+export function indexHeaders(headers: string[]): Record<string, number> {
+  const idx: Record<string, number> = {};
+  headers.forEach((h, i) => (idx[normalizeHeader(h)] = i));
+  return idx;
+}
+// Helper: build a lookup of normalized header -> index
+export function indexHeaders(headers: string[]): Record<string, number> {
+  const idx: Record<string, number> = {};
+  headers.forEach((h, i) => (idx[normalizeHeader(h)] = i));
+  return idx;
+}
 // Build a lookup { CanonicalKey -> columnIndex } and assert required headers exist
 export function buildHeaderIndex(headers: string[]) {
   // Map normalized incoming headers once

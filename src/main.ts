@@ -1,61 +1,63 @@
 // src/main.ts
-import { on, emit } from "./core/eventBus";
+import { emit } from "./core/eventBus";
 import { validateRequiredColumns } from "./csv/validateRows";
 
-const input = document.getElementById("csvInput") as HTMLInputElement | null;
-const fileNameEl = document.getElementById("fileName") as HTMLElement | null;
-const statusEl = document.getElementById("status") as HTMLElement | null;
+const fileInput =
+  (document.getElementById("csv-file") as HTMLInputElement) ||
+  (document.querySelector('input[type="file"]') as HTMLInputElement);
 
-function setStatus(msg: string, kind: "info" | "ok" | "err" = "info") {
-  if (!statusEl) return;
-  statusEl.textContent = msg;
-  statusEl.style.whiteSpace = "pre-line";
-  statusEl.style.color = kind === "ok" ? "green" : kind === "err" ? "crimson" : "inherit";
+const statusEl = document.getElementById("status"); // <div id="status"></div>
+const nameEl = document.getElementById("file-name"); // <span id="file-name"></span>
+
+function setStatusOk(msg: string) {
+  if (statusEl) {
+    statusEl.textContent = `✅ ${msg}`;
+    statusEl.className = "status ok";
+  }
+}
+function setStatusErr(msg: string) {
+  if (statusEl) {
+    statusEl.textContent = `❌ ${msg}`;
+    statusEl.className = "status err";
+  }
 }
 
-if (!input) {
-  console.error("csvInput element not found in index.html");
-} else {
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0];
-    if (!file) {
-      setStatus("No file uploaded");
-      return;
-    }
+if (fileInput) {
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
 
-    // Immediately show the file picked (so you never see “No file uploaded” now)
-    if (fileNameEl) fileNameEl.textContent = file.name;
-    setStatus(`📄 File selected: "${file.name}"\nReading…`, "info");
+    if (nameEl) nameEl.textContent = file.name;
 
     try {
       const text = await file.text();
 
-      // Very simple CSV header read (semicolon or comma)
-      const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) ?? "";
-      const delimiter = firstLine.includes(";") ? ";" : ",";
-      const headers = firstLine.split(delimiter).map(h => h.trim());
+      // First line = headers. Handle BOM, allow ; or , just in case.
+      const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "");
+      if (lines.length === 0) throw new Error("CSV appears empty.");
+      const headerLine = lines[0].replace(/^\uFEFF/, "");
+      const delimiter = headerLine.includes(";") ? ";" : ",";
+      const headers = headerLine.split(delimiter).map((h) => h.trim());
 
-      console.log("Detected headers from CSV:", headers);
-
-      // Validate headers against your custom list
+      // Validate your required columns
       validateRequiredColumns(headers);
 
-      // If we got here, validation passed. Count rows (non-empty lines minus header)
-      const rowCount = text
-        .split(/\r?\n/)
-        .slice(1)
-        .filter(l => l.trim().length > 0).length;
+      const rowCount = Math.max(0, lines.length - 1);
 
-      // Update UI and emit event
-      setStatus(
-        `📄 File: "${file.name}" (${rowCount} data rows)\n✅ All required columns found.`,
-        "ok"
-      );
-      emit("csv:uploaded", { name: file.name, size: file.size, text, delimiter, headers, rowCount });
+      // Let the rest of the app know (future steps hook into this)
+      emit("csv:uploaded:validated", {
+        name: file.name,
+        size: file.size,
+        headers,
+        rows: rowCount,
+        delimiter,
+        text,
+      });
+
+      setStatusOk(`Loaded ${rowCount} rows from ${file.name}`);
     } catch (err: any) {
+      setStatusErr(err?.message || String(err));
       console.error(err);
-      const msg = typeof err?.message === "string" ? err.message : String(err);
-      setStatus(`📄 File: "${file.name}"\n❌ ${msg}`, "err");
     }
   });
 }

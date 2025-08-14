@@ -16,12 +16,20 @@
       #uploadStatus { margin-top: 10px; color: #333; }
       #uploadStatus.ok { color: #176b1a; }
       #uploadStatus.err { color: #b00020; }
+<style>
+  .status.ok { color: #0a0; }
+  .status.err { color: #c00; }
+</style>
     </style>
   </head>
   <body>
     <div id="wrap">
     <!-- public/index.html (or your root index.html used by Vite) -->
 <body>
+<input id="csv-file" type="file" accept=".csv" />
+<div>File: <span id="file-name">No file uploaded</span></div>
+<div id="status" class="status">Waiting for file…</div>
+
   <h1>Operator Cut – CSV Intake (MVP)</h1>
 
   <label class="btn">
