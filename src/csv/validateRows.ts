@@ -1,63 +1,32 @@
+
+
 // src/csv/validateRows.ts
 import { EXACT_HEADER_MAP, normalizeHeader } from "./aliases";
-// Helper: build a lookup of normalized header -> index
-export function indexHeaders(headers: string[]): Record<string, number> {
-  const idx: Record<string, number> = {};
-  headers.forEach((h, i) => (idx[normalizeHeader(h)] = i));
-  return idx;
-}
-// Helper: build a lookup of normalized header -> index
-export function indexHeaders(headers: string[]): Record<string, number> {
-  const idx: Record<string, number> = {};
-  headers.forEach((h, i) => (idx[normalizeHeader(h)] = i));
-  return idx;
-}
-// Build a lookup { CanonicalKey -> columnIndex } and assert required headers exist
-export function buildHeaderIndex(headers: string[]) {
-  // Map normalized incoming headers once
-  const incoming = headers.map(h => normalizeHeader(h));
 
-  // Build normalized targets from our exact labels
-  const keys = Object.keys(EXACT_HEADER_MAP) as (keyof typeof EXACT_HEADER_MAP)[];
-  const targets = Object.fromEntries(
-    keys.map(k => [k, normalizeHeader(EXACT_HEADER_MAP[k])])
-  ) as Record<keyof typeof EXACT_HEADER_MAP, string>;
+// The canonical fields we require in your CSV (using your real headings via EXACT_HEADER_MAP)
+const REQUIRED_CANONICAL = ["Name", "Material", "Length", "Width", "Qty"] as const;
 
-  // Start everything as "not found"
-  const idx = Object.fromEntries(keys.map(k => [k, -1])) as Record<
-    keyof typeof EXACT_HEADER_MAP,
-    number
-  >;
+export function validateRequiredColumns(headers: string[]) {
+  // Normalize the incoming header row once
+  const have = new Set(headers.map((h) => normalizeHeader(h)));
 
-  // One-pass match (first match wins)
-  for (let i = 0; i < incoming.length; i++) {
-    const h = incoming[i];
-    for (const k of keys) {
-      if (idx[k] !== -1) continue;
-      if (h === targets[k]) {
-        idx[k] = i;
-      }
-    }
+  const missing: string[] = [];
+  for (const key of REQUIRED_CANONICAL) {
+    // Map canonical -> your exact header string (e.g. Qty -> "Quantity")
+    const exactHeader = (EXACT_HEADER_MAP as any)[key] as string;
+    const norm = normalizeHeader(exactHeader);
+    if (!have.has(norm)) missing.push(exactHeader);
   }
 
-  // Required columns for a valid cutting list row
-  const required: (keyof typeof EXACT_HEADER_MAP)[] = [
-    "Name",
-    "Material",
-    "Length",
-    "Width",
-    "Quantity",
-  ];
+  return { ok: missing.length === 0, missing };
+}
 
-  const missing = required
-    .filter(k => idx[k] === -1)
-    .map(k => EXACT_HEADER_MAP[k]);
-
-  if (missing.length) {
-    console.warn("[validate] incoming:", incoming);
-    console.warn("[validate] targets :", targets);
-    throw new Error(`Cutting CSV: Missing required column(s): ${missing.join(", ")}`);
-  }
-
+// (Optional) local helper if you need a lookup inside this module.
+// Not exported on purpose to avoid name collisions.
+function buildHeaderIndex(headers: string[]) {
+  const idx: Record<string, number> = {};
+  headers.forEach((h, i) => {
+    idx[normalizeHeader(h)] = i;
+  });
   return idx;
 }
