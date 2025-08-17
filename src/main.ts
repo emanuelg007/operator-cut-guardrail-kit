@@ -1,48 +1,33 @@
 // src/main.ts
-
 import { parseCsv } from "./csv/parseCsv";
 import { validateRequiredColumns } from "./csv/validateRows";
 import { openHeaderMapModal } from "./ui/modals/header-map-modal";
+import { normalizeRows, type NormalizedPart } from "./csv/normalize";
+import { packPartsToSheets, type PackResult } from "./nesting/engine";
+import { renderBoardSvg } from "./render/boardSvg";
 
-// ---------- Types used locally ----------
-type CanonicalKey =
-  | "Name" | "Material" | "Length" | "Width" | "Qty"
-  | "Notes" | "Note1" | "Note2"
-  | "AllowRotate" | "EdgeL1" | "EdgeL2" | "EdgeW1" | "EdgeW2";
+/* ----------------------------- DOM REFERENCES ----------------------------- */
 
-type Mapping = Record<CanonicalKey, string | null>;
-
-export interface NormalizedPart {
-  Name: string;
-  Material: string;
-  Length: number;
-  Width: number;
-  Qty: number;
-  Notes?: string;
-  Note1?: string;
-  Note2?: string;
-  AllowRotate?: string;
-  EdgeL1?: string;
-  EdgeL2?: string;
-  EdgeW1?: string;
-  EdgeW2?: string;
-}
-
-// ---------- DOM refs ----------
+// Cutting list
 const fileInput = document.getElementById("fileInput") as HTMLInputElement | null;
 const uploadBtn = document.getElementById("uploadBtn") as HTMLButtonElement | null;
 const statusEl = document.getElementById("status") as HTMLDivElement | null;
 const previewEl = document.getElementById("preview") as HTMLDivElement | null;
 const fileNameEl = document.getElementById("fileName") as HTMLSpanElement | null;
 
+// Master materials
 const materialsFileInput = document.getElementById("materialsFileInput") as HTMLInputElement | null;
 const uploadMaterialsBtn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
 const materialsStatusEl = document.getElementById("materialsStatus") as HTMLSpanElement | null;
 
+/* --------------------------------- STATE ---------------------------------- */
+
 let pendingFile: File | null = null;
 let pendingMaterialsFile: File | null = null;
+let lastPack: PackResult | null = null;
 
-// ---------- Small helpers ----------
+/* -------------------------------- HELPERS --------------------------------- */
+
 function setStatus(type: "ok" | "err" | "neutral", msg: string) {
   if (!statusEl) return;
   statusEl.className = "status " + (type === "ok" ? "ok" : type === "err" ? "err" : "");
@@ -85,8 +70,8 @@ function buildRawPreview(headers: string[], rows: string[][]) {
 
   const h3 = document.createElement("h3");
   h3.textContent = "Raw preview (first 15 rows)";
-  previewEl.appendChild(h3);
-  previewEl.appendChild(table);
+  previewEl!.appendChild(h3);
+  previewEl!.appendChild(table);
 }
 
 function buildNormalizedPreview(parts: NormalizedPart[]) {
@@ -131,7 +116,7 @@ function buildNormalizedPreview(parts: NormalizedPart[]) {
       String(p.Width),
       String(p.Qty),
       p.Note1 ?? "",
-      p.Note2 ?? ""
+      p.Note2 ?? "",
     ];
     for (const val of cells) {
       const td = document.createElement("td");
@@ -159,7 +144,7 @@ function buildNormalizedPreview(parts: NormalizedPart[]) {
   table.appendChild(tbody);
   wrap.appendChild(table);
 
-  previewEl.appendChild(wrap);
+  previewEl!.appendChild(wrap);
 }
 
 function openPartDetails(p: NormalizedPart) {
@@ -202,7 +187,8 @@ function openPartDetails(p: NormalizedPart) {
       td.style.borderBottom = "1px solid #eee";
       td.style.padding = "6px 8px";
     }
-    tr.appendChild(ktd); tr.appendChild(vtd);
+    tr.appendChild(ktd);
+    tr.appendChild(vtd);
     tbody.appendChild(tr);
   }
   table.appendChild(tbody);
@@ -232,71 +218,130 @@ function openPartDetails(p: NormalizedPart) {
   document.body.appendChild(overlay);
 }
 
-// ---------- Normalization (local, avoids external dependency) ----------
-function toNumber(s: string | undefined | null): number {
-  if (!s) return NaN;
-  const cleaned = s.replace(/,/g, ".").replace(/[^\d.+-]/g, "");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : NaN;
-}
+/* --------------------- SHEET CONTROLS & MODAL (SVG render) ---------------- */
 
-function normalizeFromMapping(
-  headers: string[],
-  rows: string[][],
-  mapping: Mapping
-): NormalizedPart[] {
-  const idx: Partial<Record<CanonicalKey, number>> = {};
-  (Object.keys(mapping) as CanonicalKey[]).forEach((k) => {
-    const chosen = mapping[k];
-    idx[k] = chosen ? headers.indexOf(chosen) : -1;
+function buildSheetControls(pack: PackResult, host: HTMLElement) {
+  host.innerHTML = "";
+
+  const mats = Object.keys(pack.byMaterial);
+  const matSel = document.createElement("select");
+  mats.forEach((m) => {
+    const o = document.createElement("option");
+    o.value = m;
+    o.textContent = m;
+    matSel.appendChild(o);
   });
 
-  const required: CanonicalKey[] = ["Name", "Material", "Length", "Width", "Qty"];
-  const out: NormalizedPart[] = [];
+  const sheetSel = document.createElement("select");
+  const ctrlBar = document.createElement("div");
+  ctrlBar.style.display = "flex";
+  ctrlBar.style.gap = "8px";
+  ctrlBar.style.marginBottom = "8px";
+  ctrlBar.style.alignItems = "center";
 
-  for (const r of rows) {
-    const get = (k: CanonicalKey) => {
-      const j = idx[k] ?? -1;
-      return j >= 0 ? (r[j] ?? "").trim() : "";
-    };
+  const svgWrap = document.createElement("div");
 
-    // Required
-    const name = get("Name");
-    const material = get("Material");
-    const length = toNumber(get("Length"));
-    const width = toNumber(get("Width"));
-    const qty = toNumber(get("Qty"));
-
-    if (!name || !material || !Number.isFinite(length) || !Number.isFinite(width) || !Number.isFinite(qty)) {
-      continue; // skip invalid rows
-    }
-
-    const part: NormalizedPart = {
-      Name: name,
-      Material: material,
-      Length: length,
-      Width: width,
-      Qty: qty
-    };
-
-    // Optional
-    const notes = get("Notes"); if (notes) part.Notes = notes;
-    const note1 = get("Note1"); if (note1) part.Note1 = note1;
-    const note2 = get("Note2"); if (note2) part.Note2 = note2;
-    const ar = get("AllowRotate"); if (ar) part.AllowRotate = ar;
-    const el1 = get("EdgeL1"); if (el1) part.EdgeL1 = el1;
-    const el2 = get("EdgeL2"); if (el2) part.EdgeL2 = el2;
-    const ew1 = get("EdgeW1"); if (ew1) part.EdgeW1 = ew1;
-    const ew2 = get("EdgeW2"); if (ew2) part.EdgeW2 = ew2;
-
-    out.push(part);
+  function draw() {
+    const m = matSel.value;
+    const sIdx = Number(sheetSel.value || 0);
+    const sheet = (pack.byMaterial[m] ?? [])[sIdx];
+    if (!sheet) return;
+    svgWrap.innerHTML = "";
+    renderBoardSvg(svgWrap, sheet);
+  }
+  function refreshSheets() {
+    const m = matSel.value;
+    const sheets = pack.byMaterial[m] ?? [];
+    sheetSel.innerHTML = "";
+    sheets.forEach((_, i) => {
+      const o = document.createElement("option");
+      o.value = String(i);
+      o.textContent = `Sheet ${i + 1} / ${sheets.length}`;
+      sheetSel.appendChild(o);
+    });
+    draw();
   }
 
-  return out;
+  matSel.addEventListener("change", refreshSheets);
+  sheetSel.addEventListener("change", draw);
+
+  ctrlBar.append("Material:", matSel, "Sheet:", sheetSel);
+  host.appendChild(ctrlBar);
+  host.appendChild(svgWrap);
+
+  if (mats.length) {
+    matSel.value = mats[0];
+    refreshSheets();
+  } else {
+    host.innerHTML = "<p style='margin:8px;color:#b91c1c'>No sheets produced.</p>";
+  }
 }
 
-// ---------- Cutting list flow ----------
-async function handleProcessCutting(file: File | null) {
+function openSheetsModal(pack: PackResult) {
+  const overlay = document.createElement("div");
+  overlay.style.position = "fixed";
+  overlay.style.inset = "0";
+  overlay.style.background = "rgba(0,0,0,0.35)";
+  overlay.style.display = "flex";
+  overlay.style.alignItems = "center";
+  overlay.style.justifyContent = "center";
+  overlay.style.zIndex = "10000";
+
+  const panel = document.createElement("div");
+  panel.style.width = "min(1100px, 92vw)";
+  panel.style.maxHeight = "90vh";
+  panel.style.background = "#fff";
+  panel.style.borderRadius = "12px";
+  panel.style.boxShadow = "0 24px 70px rgba(0,0,0,0.35)";
+  panel.style.padding = "12px";
+  panel.style.display = "grid";
+  panel.style.gridTemplateRows = "auto 1fr";
+  panel.style.gap = "8px";
+
+  const topBar = document.createElement("div");
+  topBar.style.display = "flex";
+  topBar.style.alignItems = "center";
+  topBar.style.justifyContent = "space-between";
+  topBar.style.gap = "8px";
+
+  const title = document.createElement("strong");
+  title.textContent = "Sheets Preview";
+
+  const close = document.createElement("button");
+  close.textContent = "× Close";
+  close.style.border = "1px solid #d1d5db";
+  close.style.borderRadius = "8px";
+  close.style.background = "#fff";
+  close.style.cursor = "pointer";
+  close.style.padding = "6px 10px";
+  close.onclick = () => document.body.removeChild(overlay);
+
+  topBar.appendChild(title);
+  topBar.appendChild(close);
+
+  const host = document.createElement("div");
+  host.style.overflow = "auto";
+  host.style.minHeight = "0";
+
+  panel.appendChild(topBar);
+  panel.appendChild(host);
+  overlay.appendChild(panel);
+  document.body.appendChild(overlay);
+
+  buildSheetControls(pack, host);
+
+  const onEsc = (e: KeyboardEvent) => {
+    if (e.key === "Escape") {
+      document.body.removeChild(overlay);
+      window.removeEventListener("keydown", onEsc);
+    }
+  };
+  window.addEventListener("keydown", onEsc);
+}
+
+/* ----------------------------- MAIN PROCESSING ----------------------------- */
+
+async function handleCuttingList(file: File | null) {
   clearPreview();
 
   if (!file) {
@@ -315,10 +360,9 @@ async function handleProcessCutting(file: File | null) {
       return;
     }
 
-    // Validate required columns (based on your adjusted headings inside validateRows.ts)
     const res = validateRequiredColumns(headers);
     if (!res.ok) {
-      setStatus("err", `Missing required column(s): ${res.missing.join(", ")}`);
+      setStatus("err", `Missing required column(s): ${res.missing!.join(", ")}`);
       buildRawPreview(headers, rows);
       return;
     }
@@ -326,25 +370,41 @@ async function handleProcessCutting(file: File | null) {
     setStatus("ok", `Loaded ${rows.length.toLocaleString()} row(s). Delimiter detected: "${delimiter}"`);
     buildRawPreview(headers, rows);
 
-    // Load last-used mapping if any
-    const savedDefaults: Partial<Mapping> | null = (() => {
+    const savedDefaults = (() => {
       try { return JSON.parse(localStorage.getItem("oc:lastMapping") || "null"); }
       catch { return null; }
     })();
 
-    // Open mapping drawer → normalize on apply
     openHeaderMapModal(
       headers,
       (mapping) => {
         try { localStorage.setItem("oc:lastMapping", JSON.stringify(mapping)); } catch {}
-        const normalized = normalizeFromMapping(headers, rows, mapping as Mapping);
+
+        const normalized = normalizeRows(headers, rows, mapping);
         if (normalized.length === 0) {
           setStatus("err", "Mapping applied, but no valid rows were produced (check required fields).");
           return;
         }
-        clearPreview(); // hide raw preview
+        clearPreview();
         setStatus("ok", `Mapped to ${normalized.length.toLocaleString()} part(s).`);
         buildNormalizedPreview(normalized);
+
+        // Pack → Sheets → Modal
+        lastPack = packPartsToSheets(normalized, {
+          boardW: 1830,
+          boardH: 2750,
+          kerf: 3,
+          margin: 10,
+          heuristic: "BSSF",
+          grain: "lengthwise",
+          materialRotate: true,
+        });
+        if (lastPack.unplaced.length) {
+          console.warn("Unplaced parts:", lastPack.unplaced);
+        }
+        if (Object.keys(lastPack.byMaterial).length) {
+          openSheetsModal(lastPack);
+        }
       },
       savedDefaults ?? undefined,
       rows // live preview inside the drawer
@@ -355,19 +415,12 @@ async function handleProcessCutting(file: File | null) {
   }
 }
 
-// ---------- Master Materials flow ----------
-materialsFileInput?.addEventListener("change", () => {
-  pendingMaterialsFile = materialsFileInput.files && materialsFileInput.files[0] ? materialsFileInput.files[0] : null;
-  setMaterialsStatus("neutral", pendingMaterialsFile ? `Selected: ${pendingMaterialsFile.name}` : "");
-});
-
-uploadMaterialsBtn?.addEventListener("click", async () => {
+async function handleMaterialsCsv(file: File | null) {
+  if (!file) {
+    setMaterialsStatus("err", "Choose a Master Materials CSV first.");
+    return;
+  }
   try {
-    const file = pendingMaterialsFile ?? (materialsFileInput?.files?.[0] ?? null);
-    if (!file) {
-      setMaterialsStatus("err", "Choose a Master Materials CSV first.");
-      return;
-    }
     const text = await file.text();
     const { headers, rows, delimiter } = parseCsv(text);
 
@@ -376,33 +429,42 @@ uploadMaterialsBtn?.addEventListener("click", async () => {
       return;
     }
 
-    // Soft check, adjust later to your exact schema
     const required = ["Name", "BoardLength", "BoardWidth", "Thickness"];
     const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
     const H = new Set(headers.map(norm));
-    const missing = required.filter((r) => !H.has(norm(r)));
+    const missing = required.filter(r => !H.has(norm(r)));
     if (missing.length) {
       setMaterialsStatus("err", `Missing column(s): ${missing.join(", ")}`);
       return;
     }
 
     setMaterialsStatus("ok", `Loaded ${rows.length.toLocaleString()} material row(s). Delimiter: "${delimiter}"`);
-    // TODO: store into materials library state when that module is wired
+    // TODO: add to materials library state
   } catch (err: any) {
     console.error(err);
     setMaterialsStatus("err", `Failed: ${err?.message ?? err}`);
   }
-});
+}
 
-// ---------- Wiring (cutting list) ----------
+/* --------------------------------- WIRING --------------------------------- */
+
+// Cutting list
 fileInput?.addEventListener("change", () => {
   pendingFile = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
   showFileName(pendingFile ? pendingFile.name : "No file chosen");
 });
-
 uploadBtn?.addEventListener("click", () => {
-  void handleProcessCutting(pendingFile ?? (fileInput && fileInput.files ? fileInput.files[0] : null));
+  void handleCuttingList(pendingFile ?? (fileInput && fileInput.files ? fileInput.files[0] : null));
 });
 
-// prevent accidental form submits
+// Master materials
+materialsFileInput?.addEventListener("change", () => {
+  pendingMaterialsFile = materialsFileInput.files && materialsFileInput.files[0] ? materialsFileInput.files[0] : null;
+  setMaterialsStatus("neutral", pendingMaterialsFile ? `Selected: ${pendingMaterialsFile.name}` : "");
+});
+uploadMaterialsBtn?.addEventListener("click", () => {
+  void handleMaterialsCsv(pendingMaterialsFile ?? (materialsFileInput?.files?.[0] ?? null));
+});
+
+// Prevent form submits from reloading the page (in case you wrap controls later)
 document.addEventListener("submit", (e) => e.preventDefault());
