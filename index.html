@@ -28,7 +28,8 @@
     </style>
   </head>
   <body>
-   <div id="svgHost" style="margin:12px;"></div> 
+    <div id="svgHost" style="margin:12px;"></div>
+
     <header>
       <div class="fileRow">
         <input id="fileInput" type="file" accept=".csv,text/csv" />
@@ -39,6 +40,13 @@
     </header>
 
     <main>
+      <!-- Master Materials controls (moved OUT of <style>) -->
+      <div class="fileRow" style="margin-bottom:12px;">
+        <input id="materialsFileInput" type="file" accept=".csv" />
+        <button id="uploadMaterialsBtn">Upload Master Materials CSV</button>
+        <span id="materialsStatus" class="status"></span>
+      </div>
+
       <div id="preview"></div>
       <div id="boardHost" data-material="" data-index=""></div>
     </main>
