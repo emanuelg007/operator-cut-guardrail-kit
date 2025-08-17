@@ -1,46 +1,130 @@
-// src/nesting/maxRects.ts
-export interface Rect { x: number; y: number; w: number; h: number; }
+// src/nesting/packJob.ts
+import { MaxRectsBin } from "./maxRects";
 
-export class MaxRectsBin {
-  width: number;
-  height: number;
+export interface PackerSettings {
+  boardWidth: number;
+  boardHeight: number;
   kerf: number;
-  free: Rect[];
-  used: Rect[] = [];
-  constructor(w: number, h: number, kerf: number) {
-    this.width = w;
-    this.height = h;
-    this.kerf = kerf;
-    this.free = [{ x: 0, y: 0, w, h }];
-  }
+  allowRotateByDefault?: boolean;
 }
 
-// Very small, Best Area Fit insert
-export function insertBestAreaFit(bin: MaxRectsBin, w: number, h: number): Rect | null {
-  let best: { idx: number; waste: number; rect: Rect } | null = null;
+export interface PieceReq {
+  w: number;      // width (mm)
+  h: number;      // height (mm)
+  allowRotate: boolean;
+  ref: number;    // unique reference to your part
+}
 
-  // include kerf around the placed rect when carving free space
-  const needW = w + bin.kerf;
-  const needH = h + bin.kerf;
+export interface Placement {
+  binIndex: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  rotated: boolean;
+  ref: number;
+}
 
-  for (let i = 0; i < bin.free.length; i++) {
-    const fr = bin.free[i];
-    if (needW <= fr.w && needH <= fr.h) {
-      const waste = fr.w * fr.h - needW * needH;
-      if (!best || waste < best.waste) {
-        best = { idx: i, waste, rect: { x: fr.x, y: fr.y, w, h } };
+export interface PackedSheet {
+  placements: Placement[];
+  usedArea: number;
+  wastedArea: number;
+  width: number;
+  height: number;
+}
+
+export interface PackedJob {
+  sheets: PackedSheet[];
+  unplacedRefs: number[];
+}
+
+export function packJob(pieces: PieceReq[], settings: PackerSettings): PackedJob {
+  const sheets: PackedSheet[] = [];
+  const unplacedRefs: number[] = [];
+
+  // Always declare bins first (prevents "used before declaration")
+  const bins: MaxRectsBin[] = [
+    new MaxRectsBin(settings.boardWidth, settings.boardHeight, settings.kerf),
+  ];
+
+  const ensureSheet = (idx: number) => {
+    if (!sheets[idx]) {
+      sheets[idx] = {
+        placements: [],
+        usedArea: 0,
+        wastedArea: 0,
+        width: settings.boardWidth,
+        height: settings.boardHeight,
+      };
+    }
+  };
+
+  for (const piece of pieces) {
+    let placed: Placement | null = null;
+
+    // Try existing bins
+    for (let i = 0; i < bins.length && !placed; i++) {
+      const bin = bins[i];
+
+      // try normal
+      const r1 = bin.insert(piece.w, piece.h, true);
+      if (r1) {
+        placed = { binIndex: i, x: r1.x, y: r1.y, w: piece.w, h: piece.h, rotated: false, ref: piece.ref };
+        break;
+      }
+
+      // try rotated
+      if (piece.allowRotate) {
+        const r2 = bin.insert(piece.h, piece.w, true);
+        if (r2) {
+          placed = { binIndex: i, x: r2.x, y: r2.y, w: piece.h, h: piece.w, rotated: true, ref: piece.ref };
+          break;
+        }
       }
     }
+
+    // If still not placed, open a new bin and try there
+    if (!placed) {
+      const newBin = new MaxRectsBin(settings.boardWidth, settings.boardHeight, settings.kerf);
+      let r = newBin.insert(piece.w, piece.h, true);
+      let rotated = false;
+
+      if (!r && piece.allowRotate) {
+        r = newBin.insert(piece.h, piece.w, true);
+        rotated = !!r;
+      }
+
+      if (!r) {
+        // too big even for a fresh board
+        unplacedRefs.push(piece.ref);
+        continue;
+      }
+
+      const newIndex = bins.length;
+      bins.push(newBin);
+      placed = {
+        binIndex: newIndex,
+        x: r.x,
+        y: r.y,
+        w: rotated ? piece.h : piece.w,
+        h: rotated ? piece.w : piece.h,
+        rotated,
+        ref: piece.ref,
+      };
+    }
+
+    // Record placement
+    ensureSheet(placed.binIndex);
+    const s = sheets[placed.binIndex];
+    s.placements.push(placed);
+    s.usedArea += placed.w * placed.h;
   }
-  if (!best) return null;
 
-  const fr = bin.free.splice(best.idx, 1)[0];
-  // split into right and down areas
-  const right: Rect = { x: fr.x + needW, y: fr.y, w: fr.w - needW, h: needH };
-  const down: Rect  = { x: fr.x, y: fr.y + needH, w: fr.w, h: fr.h - needH };
-  if (right.w > 0 && right.h > 0) bin.free.push(right);
-  if (down.w > 0 && down.h > 0)  bin.free.push(down);
+  // Compute waste
+  for (const s of sheets) {
+    const area = s.width * s.height;
+    s.wastedArea = Math.max(0, area - s.usedArea);
+  }
 
-  bin.used.push(best.rect);
-  return best.rect;
+  return { sheets, unplacedRefs };
 }

@@ -1,4 +1,3 @@
 #!/usr/bin/env sh
-. "$(dirname -- "$0")/_/husky.sh"
-
-npm run typecheck
+# Husky v9+ style: no _/husky.sh sourcing
+npm run typecheck || exit 1
