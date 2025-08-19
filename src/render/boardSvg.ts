@@ -1,85 +1,158 @@
 // src/render/boardSvg.ts
-import type { Sheet } from "../nesting/packJob";
+import type { SheetLayout } from "../nesting/types";
 
-export interface RenderOptions {
-  hostWidthPx?: number; // if set, we'll scale to this width (keeps aspect)
-  showDims?: boolean;
+interface Pager {
+  go(idx: number): void;
+  next(): void;
+  prev(): void;
+  currentIndex(): number;
 }
 
-export function renderBoardSvg(host: HTMLElement, sheet: Sheet, opts: RenderOptions = {}) {
-  host.innerHTML = "";
-  const { hostWidthPx = 900, showDims = true } = opts;
+export function createBoardPager(container: HTMLElement, layouts: SheetLayout[]): Pager {
+  container.innerHTML = `
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:.5rem; margin-bottom:.5rem;">
+      <button id="prevBtn" type="button">◀</button>
+      <div id="pageLabel" style="font-weight:600;"></div>
+      <button id="nextBtn" type="button">▶</button>
+    </div>
+    <div id="svgWrap" style="border:1px solid #ccc; position:relative; height:60vh; overflow:hidden;"></div>
+  `;
 
-  const vbW = sheet.width;
-  const vbH = sheet.height;
+  const prevBtn = container.querySelector<HTMLButtonElement>("#prevBtn")!;
+  const nextBtn = container.querySelector<HTMLButtonElement>("#nextBtn")!;
+  const pageLabel = container.querySelector<HTMLDivElement>("#pageLabel")!;
+  const svgWrap = container.querySelector<HTMLDivElement>("#svgWrap")!;
 
-  const svg = el("svg", {
-    viewBox: `0 0 ${vbW} ${vbH}`,
-    width: String(hostWidthPx),
-    style: "max-width:100%;height:auto;display:block;border-radius:8px"
-  });
+  let idx = 0;
 
-  // Board outline
-  svg.appendChild(el("rect", {
-    x: "0", y: "0",
-    width: String(vbW),
-    height: String(vbH),
-    fill: "#fff",
-    stroke: "#111827",
-    "stroke-width": "2"
-  }));
-
-  // Parts
-  for (const p of sheet.parts) {
-    const g = el("g", {});
-    g.appendChild(el("rect", {
-      x: String(p.x),
-      y: String(p.y),
-      width: String(p.w),
-      height: String(p.h),
-      fill: "#e5f3ff",
-      stroke: "#2563eb",
-      "stroke-width": "1"
-    }));
-    // name centered
-    const cx = p.x + p.w / 2;
-    const cy = p.y + p.h / 2;
-    g.appendChild(el("text", {
-      x: String(cx), y: String(cy),
-      "text-anchor": "middle",
-      "dominant-baseline": "middle",
-      "font-size": "16",
-      "font-family": "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-      fill: "#111827"
-    }, p.name));
-
-    if (showDims) {
-      g.appendChild(el("text", {
-        x: String(p.x + 4), y: String(p.y + 16),
-        "font-size": "12", fill: "#374151"
-      }, `${p.w} × ${p.h} mm`));
+  function render(i: number) {
+    if (!layouts.length) {
+      svgWrap.innerHTML = `<div class="empty-state">No sheets to display.</div>`;
+      pageLabel.textContent = `Sheets: 0`;
+      return;
     }
 
-    svg.appendChild(g);
+    const sheet = layouts[i];
+    pageLabel.textContent = `Sheet ${i + 1} / ${layouts.length} — ${sheet.boardId} #${sheet.boardIdx + 1}`;
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", "100%");
+    svg.setAttribute("height", "100%");
+    svg.setAttribute("viewBox", `0 0 ${sheet.width} ${sheet.height}`);
+
+    // Background
+    const bg = document.createElementNS(svg.namespaceURI, "rect");
+    bg.setAttribute("x", "0");
+    bg.setAttribute("y", "0");
+    bg.setAttribute("width", String(sheet.width));
+    bg.setAttribute("height", String(sheet.height));
+    bg.setAttribute("fill", "#f7f7f7");
+    bg.setAttribute("stroke", "#999");
+    svg.appendChild(bg);
+
+    // Parts
+    for (const p of sheet.placed) {
+      const r = document.createElementNS(svg.namespaceURI, "rect");
+      r.setAttribute("x", String(p.x));
+      r.setAttribute("y", String(p.y));
+      r.setAttribute("width", String(p.w));
+      r.setAttribute("height", String(p.h));
+      r.setAttribute("fill", "#e2ecff");
+      r.setAttribute("stroke", "#3561d1");
+      r.setAttribute("stroke-width", "0.6");
+      svg.appendChild(r);
+
+      const label = document.createElementNS(svg.namespaceURI, "text");
+      label.setAttribute("x", String(p.x + p.w / 2));
+      label.setAttribute("y", String(p.y + p.h / 2));
+      label.setAttribute("dominant-baseline", "middle");
+      label.setAttribute("text-anchor", "middle");
+      label.setAttribute("font-size", "8");
+      label.textContent = p.name || p.id;
+      svg.appendChild(label);
+    }
+
+    enableZoomPan(svg);
+    svgWrap.replaceChildren(svg);
   }
 
-  // Footer label
-  svg.appendChild(el("text", {
-    x: "8", y: String(vbH - 8),
-    "font-size": "12",
-    fill: "#6b7280"
-  }, `Material: ${sheet.material} • Sheet ${sheet.index}`));
+  function enableZoomPan(svg: SVGSVGElement) {
+    let scale = 1;
+    let originX = 0, originY = 0;
+    let panning = false;
+    let startX = 0, startY = 0;
 
-  host.appendChild(svg);
+    const apply = () => {
+      let g = svg.querySelector<SVGGElement>("g[data-root]");
+      if (!g) {
+        g = document.createElementNS(svg.namespaceURI, "g");
+        g.setAttribute("data-root", "1");
+        const children = Array.from(svg.childNodes);
+        for (const c of children) g.appendChild(c);
+        svg.appendChild(g);
+      }
+      g.setAttribute("transform", `translate(${originX} ${originY}) scale(${scale})`);
+    };
+
+    svg.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      const delta = Math.sign(e.deltaY);
+      const factor = delta > 0 ? 0.9 : 1.1;
+      scale = Math.max(0.1, Math.min(10, scale * factor));
+      apply();
+    }, { passive: false });
+
+    svg.addEventListener("pointerdown", (e) => {
+      panning = true; startX = e.clientX; startY = e.clientY; svg.setPointerCapture(e.pointerId);
+    });
+    svg.addEventListener("pointermove", (e) => {
+      if (!panning) return;
+      originX += (e.clientX - startX) / scale;
+      originY += (e.clientY - startY) / scale;
+      startX = e.clientX; startY = e.clientY;
+      apply();
+    });
+    svg.addEventListener("pointerup", (e) => { panning = false; svg.releasePointerCapture?.(e.pointerId); });
+    apply();
+  }
+
+  function go(n: number) { idx = Math.max(0, Math.min(layouts.length - 1, n)); render(idx); }
+  prevBtn.onclick = () => go(idx - 1);
+  nextBtn.onclick = () => go(idx + 1);
+
+  go(0);
+  return { go, next: () => go(idx + 1), prev: () => go(idx - 1), currentIndex: () => idx };
 }
 
-function el<K extends keyof SVGElementTagNameMap>(
-  tag: K,
-  attrs: Record<string, string>,
-  text?: string
-): SVGElementTagNameMap[K] {
-  const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
-  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
-  if (text != null) node.appendChild(document.createTextNode(text));
-  return node as any;
+/**
+ * Legacy-compatible shim:
+ * - renderBoardSvg(layouts)                        // old style (auto-uses #board-svg)
+ * - renderBoardSvg(containerEl, layouts)          // new style
+ * Prefer the named createBoardPager() in new code.
+ */
+export function renderBoardSvg(a: HTMLElement | SheetLayout[] | null | undefined, b?: SheetLayout[]) {
+  let container: HTMLElement | null;
+  let layouts: SheetLayout[];
+
+  if (Array.isArray(a) && !b) {
+    // old signature: (layouts)
+    container = document.getElementById("board-svg");
+    layouts = a;
+  } else {
+    container = a as HTMLElement | null;
+    layouts = b ?? [];
+  }
+
+  if (!container) {
+    console.warn("renderBoardSvg: container not found; looked for #board-svg");
+    return;
+  }
+  if (!Array.isArray(layouts)) {
+    console.warn("renderBoardSvg: layouts missing/invalid");
+    return;
+  }
+  createBoardPager(container, layouts);
 }
+
+// Keep the alias users may already import
+export { renderBoardSvg as default };

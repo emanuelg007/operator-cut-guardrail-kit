@@ -1,75 +1,64 @@
-// src/nesting/maxRects.ts
-import { Rect, area, splitFree, pruneContained } from "./geometry";
+//src/nesting/maxRects.ts ///
+import { Rect, splitFreeRect, mergeFreeRects } from "./rect";
 
-export type Heuristic = "BSSF" | "BLSF" | "BAF" | "CP"; // short-side, long-side, area, contact point
-export type Placement = Rect & { rotated: boolean; name?: string; id?: string };
+export interface MRPlacement { rect: Rect; rotated: boolean; }
 
-function fits(f: Rect, w: number, h: number) { return w <= f.w && h <= f.h; }
-function contactScore(f: Rect, p: Rect) {
-  // prefer hugging edges for better compaction
-  let score = 0;
-  if (p.x === f.x) score += p.h;
-  if (p.y === f.y) score += p.w;
-  if (p.x + p.w === f.x + f.w) score += p.h;
-  if (p.y + p.h === f.y + f.h) score += p.w;
-  return -score; // lower is better (we minimize)
+export function maxRectsPack(sheet: Rect, items: { w: number; h: number; id?: string }[]): MRPlacement[] {
+  let freeRects: Rect[] = [{ ...sheet }];
+  const result: MRPlacement[] = new Array(items.length) as any;
+
+  for (let i = 0; i < items.length; i++) {
+    const w = items[i].w, h = items[i].h;
+    let best: { score: number; placement: MRPlacement; frIdx: number } | null = null;
+
+    for (let idx = 0; idx < freeRects.length; idx++) {
+      const fr = freeRects[idx];
+      const s1 = scoreBSSF(fr, w, h);
+      if (s1 !== Infinity) consider({ x: fr.x, y: fr.y, w, h }, false, idx, s1);
+      const s2 = scoreBSSF(fr, h, w);
+      if (s2 !== Infinity) consider({ x: fr.x, y: fr.y, w: h, h: w }, true, idx, s2);
+    }
+
+    if (!best) { result[i] = { rect: { x: 0, y: 0, w: 0, h: 0 }, rotated: false }; continue; }
+
+    result[i] = best.placement;
+    const used = best.placement.rect;
+
+    // split chosen free rect by used area
+    const chosen = freeRects[best.frIdx];
+    const pieces = splitFreeRect(chosen, used);
+    freeRects.splice(best.frIdx, 1, ...pieces);
+    freeRects = pruneContained(mergeFreeRects(freeRects));
+
+    function consider(rect: Rect, rotated: boolean, frIdx: number, score: number) {
+      if (!best || score < best.score) best = { score, placement: { rect, rotated }, frIdx };
+    }
+  }
+
+  return result;
 }
 
-export class MaxRectsBin {
-  readonly width: number;
-  readonly height: number;
-  readonly kerf: number;
-  free: Rect[] = [];
-  used: Placement[] = [];
-
-  constructor(width: number, height: number, kerf = 0, margin = 0) {
-    this.width = width; this.height = height; this.kerf = kerf;
-    this.free = [{
-      x: margin,
-      y: margin,
-      w: Math.max(0, width - margin * 2),
-      h: Math.max(0, height - margin * 2),
-    }];
-  }
-
-  private score(f: Rect, w: number, h: number, heuristic: Heuristic) {
-    const wLeft = f.w - w, hLeft = f.h - h;
-    switch (heuristic) {
-      case "BSSF": return Math.min(wLeft, hLeft) + Math.max(wLeft, hLeft) / 1e6;
-      case "BLSF": return Math.max(wLeft, hLeft) + Math.min(wLeft, hLeft) / 1e6;
-      case "BAF":  return (f.w * f.h) - (w * h);
-      case "CP":   return contactScore(f, { x: f.x, y: f.y, w, h });
-    }
-  }
-
-  // Preview: best position for w×h (optionally rotated). Returns score + pose or null if no fit.
-  preview(w: number, h: number, allowRotate: boolean, heuristic: Heuristic) {
-    let best: { score: number; idx: number; rotated: boolean; x: number; y: number; w: number; h: number } | null = null;
-
-    for (let i = 0; i < this.free.length; i++) {
-      const f = this.free[i];
-      if (fits(f, w, h)) {
-        const s = this.score(f, w, h, heuristic)!;
-        if (!best || s < best.score) best = { score: s, idx: i, rotated: false, x: f.x, y: f.y, w, h };
-      }
-      if (allowRotate && fits(f, h, w)) {
-        const s = this.score(f, h, w, heuristic)!;
-        if (!best || s < best.score) best = { score: s, idx: i, rotated: true, x: f.x, y: f.y, w: h, h: w };
-      }
-    }
-    return best;
-  }
-
-  // Commit a chosen pose into the bin
-  place(p: Omit<Placement,"rotated"> & { rotated: boolean }) {
-    // Split all intersecting free rects
-    const fresh: Rect[] = [];
-    for (const f of this.free) {
-      const parts = splitFree(f, p, this.kerf);
-      for (const r of parts) fresh.push(r);
-    }
-    this.free = fresh;
-    pruneContained(this.free);
-    this.used.push({ ...p });
-  }
+function scoreBSSF(free: Rect, w: number, h: number): number {
+  if (w > free.w || h > free.h) return Infinity;
+  const leftoverH = free.h - h;
+  const leftoverW = free.w - w;
+  return Math.min(leftoverH, leftoverW); // best short side first
 }
+
+function pruneContained(rects: Rect[]): Rect[] {
+  const out: Rect[] = [];
+  for (let i = 0; i < rects.length; i++) {
+    const a = rects[i];
+    let contained = false;
+    for (let j = 0; j < rects.length; j++) {
+      if (i === j) continue;
+      const b = rects[j];
+      if (a.x >= b.x && a.y >= b.y && a.x + a.w <= b.x + b.w && a.y + a.h <= b.y + b.h) {
+        contained = true; break;
+      }
+    }
+    if (!contained) out.push(a);
+  }
+  return out;
+}
+

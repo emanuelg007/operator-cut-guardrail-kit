@@ -1,10 +1,60 @@
 // src/main.ts
+import { getBoards, setBoards } from "./state/materials";
 import { parseCsv } from "./csv/parseCsv";
 import { validateRequiredColumns } from "./csv/validateRows";
+// If you created the helper (recommended), keep this import:
+import { materialsRowsToBoards } from "./materials/toBoards";
+
 import { openHeaderMapModal } from "./ui/modals/header-map-modal";
 import { normalizeRows, type NormalizedPart } from "./csv/normalize";
-import { packPartsToSheets, type PackResult } from "./nesting/engine";
-import { renderBoardSvg } from "./render/boardSvg";
+import { packPartsToSheets } from "./nesting/engine";
+import type { PackResult, SheetLayout } from "./nesting/types";
+import { createBoardPager } from "./render/boardSvg";
+import { on, emit, Events } from "./events";
+import { initSettingsUI } from "./ui/settings";
+import "./styles/app.css";
+
+/** Ensure the Master Materials controls exist and are wired IDs we expect. */
+function ensureMaterialsControls() {
+  const settings = document.getElementById("settings");
+  // Create a visible button in #settings
+  if (settings && !document.getElementById("uploadMaterialsBtn")) {
+    const wrap = document.createElement("div");
+    wrap.style.display = "flex";
+    wrap.style.alignItems = "center";
+    wrap.style.gap = "8px";
+    wrap.style.margin = "8px 0";
+
+    const btn = document.createElement("button");
+    btn.id = "uploadMaterialsBtn";
+    btn.type = "button";
+    btn.textContent = "Upload Master Materials (CSV)";
+    btn.style.padding = "6px 10px";
+    btn.style.border = "1px solid #d1d5db";
+    btn.style.borderRadius = "8px";
+    btn.style.background = "#fff";
+    btn.style.cursor = "pointer";
+
+    const status = document.createElement("span");
+    status.id = "materialsStatus";
+    status.style.fontSize = "12px";
+    status.style.color = "#374151";
+
+    wrap.appendChild(btn);
+    wrap.appendChild(status);
+    settings.prepend(wrap);
+  }
+  // Hidden file input lives in <body> so it can be clicked from anywhere
+  if (!document.getElementById("materialsFileInput")) {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv,text/csv";
+    input.id = "materialsFileInput";
+    input.style.display = "none";
+    document.body.appendChild(input);
+  }
+}
+
 
 /* ----------------------------- DOM REFERENCES ----------------------------- */
 
@@ -16,9 +66,32 @@ const previewEl = document.getElementById("preview") as HTMLDivElement | null;
 const fileNameEl = document.getElementById("fileName") as HTMLSpanElement | null;
 
 // Master materials
+ensureMaterialsControls();
+// Master materials (ensure exists, then query)
 const materialsFileInput = document.getElementById("materialsFileInput") as HTMLInputElement | null;
 const uploadMaterialsBtn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
 const materialsStatusEl = document.getElementById("materialsStatus") as HTMLSpanElement | null;
+
+
+// Render targets
+const svgContainer = document.getElementById("board-svg") as HTMLElement | null;
+const settingsContainer = document.getElementById("settings") as HTMLElement | null;
+
+/* --------------------------------- INIT ----------------------------------- */
+
+if (settingsContainer) initSettingsUI(settingsContainer);
+
+// Ensure board area shows a placeholder so it has height immediately
+if (svgContainer && svgContainer.children.length === 0) {
+  svgContainer.innerHTML = `<div class="empty-state">No sheets yet — upload Master Materials and a cutting list.</div>`;
+}
+
+// Render in-page pager when layouts are ready
+on(Events.LAYOUTS_READY, (payload: { sheets: SheetLayout[] }) => {
+  if (!svgContainer) return;
+  svgContainer.innerHTML = "";
+  createBoardPager(svgContainer, payload.sheets);
+});
 
 /* --------------------------------- STATE ---------------------------------- */
 
@@ -40,6 +113,17 @@ function setMaterialsStatus(type: "ok" | "err" | "neutral", msg: string) {
 }
 function showFileName(name: string) { if (fileNameEl) fileNameEl.textContent = name || "No file chosen"; }
 function clearPreview() { if (previewEl) previewEl.innerHTML = ""; }
+
+function readNumberByIds(ids: string[], def = 0): number {
+  for (const id of ids) {
+    const el = document.getElementById(id) as HTMLInputElement | null;
+    if (el && el.value !== "") {
+      const v = parseFloat(el.value);
+      if (!Number.isNaN(v)) return v;
+    }
+  }
+  return def;
+}
 
 function buildRawPreview(headers: string[], rows: string[][]) {
   if (!previewEl) return;
@@ -247,7 +331,8 @@ function buildSheetControls(pack: PackResult, host: HTMLElement) {
     const sheet = (pack.byMaterial[m] ?? [])[sIdx];
     if (!sheet) return;
     svgWrap.innerHTML = "";
-    renderBoardSvg(svgWrap, sheet);
+    // Reuse the same pager renderer for consistency (single-sheet pager)
+    createBoardPager(svgWrap, [sheet]);
   }
   function refreshSheets() {
     const m = matSel.value;
@@ -389,22 +474,133 @@ async function handleCuttingList(file: File | null) {
         setStatus("ok", `Mapped to ${normalized.length.toLocaleString()} part(s).`);
         buildNormalizedPreview(normalized);
 
-        // Pack → Sheets → Modal
-        lastPack = packPartsToSheets(normalized, {
-          boardW: 1830,
-          boardH: 2750,
-          kerf: 3,
-          margin: 10,
-          heuristic: "BSSF",
-          grain: "lengthwise",
-          materialRotate: true,
-        });
-        if (lastPack.unplaced.length) {
+       // === PACK using real boards from Master Materials ===
+const boards = getBoards();
+if (!boards.length) {
+  setStatus("err", "No boards loaded. Upload your Master Materials CSV first.");
+  console.error("packPartsToSheets aborted: no boards in state.");
+  return;
+}
+
+// sanity: materials in parts vs boards
+const partMaterials = Array.from(new Set(
+  normalized
+    .map(p => String((p as any).Material ?? "").trim().toLowerCase())
+    .filter(Boolean)
+));
+const boardTags = Array.from(new Set(
+  boards
+    .map(b => String((b as any).materialTag ?? "").trim().toLowerCase())
+    .filter(Boolean)
+));
+const overlap = partMaterials.filter(m => boardTags.includes(m));
+if (!overlap.length) {
+  setStatus(
+    "err",
+    `No matching materials: parts use [${partMaterials.join(", ")}], boards have [${boardTags.join(", ")}]. ` +
+    `Make sure the parts “Material” exactly equals the boards “MaterialTag”.`
+  );
+  console.error("Material mismatch", { partMaterials, boardTags });
+  return;
+}
+
+const currentKerf = readNumberByIds(["kerf", "kerfInput", "input-kerf"], 0);
+const currentMargin = readNumberByIds(["margin", "marginInput", "input-margin"], 0);
+
+// Choose the correct engine signature at runtime.
+// If your engine is (boards, parts, opts) we’ll use that.
+// If it’s (parts, opts) we’ll fall back and pick the first matching board per material.
+let pack: any = null;
+try {
+  const arity = (packPartsToSheets as any).length;
+
+  if (arity >= 3) {
+    // Modern engine: (boards[], parts[], options)
+    pack = packPartsToSheets(boards as any, normalized as any, {
+      kerf: currentKerf,
+      margin: currentMargin,
+    } as any);
+  } else {
+    // Legacy engine: (parts[], options) — run per material with a matching board size
+    console.warn("[engine] Using legacy two-argument packer path.");
+
+    const byMaterial: Record<string, any[]> = {};
+    const unplaced: any[] = [];
+
+    // group parts by material
+    const groups = new Map<string, NormalizedPart[]>();
+    for (const p of normalized) {
+      const m = String((p as any).Material ?? "").trim().toLowerCase();
+      if (!m) continue;
+      if (!groups.has(m)) groups.set(m, []);
+      groups.get(m)!.push(p);
+    }
+
+    for (const [m, parts] of groups.entries()) {
+      // pick a matching board; if multiple, take the first
+      const match = boards.find(
+        b => String((b as any).materialTag ?? "").trim().toLowerCase() === m
+      ) || boards[0];
+
+      const res = packPartsToSheets(parts as any, {
+        boardW: (match as any).width,
+        boardH: (match as any).height,
+        kerf: currentKerf,
+        margin: currentMargin,
+        heuristic: "BSSF",
+        grain: "lengthwise",
+        materialRotate: true,
+      } as any);
+
+      // Expect legacy result to expose res.sheets or be an array; normalize into array
+      const sheets = Array.isArray(res?.sheets) ? res.sheets : (Array.isArray(res) ? res : []);
+      byMaterial[m] = sheets;
+      if (Array.isArray(res?.unplaced) && res.unplaced.length) {
+        unplaced.push(...res.unplaced);
+      }
+    }
+
+    pack = { byMaterial, unplaced };
+  }
+} catch (e) {
+  console.error("Packing failed:", e);
+  setStatus("err", "Packing failed — see console for details.");
+  return;
+}
+
+lastPack = pack;
+
+// Modal for per-material inspection (uses the pack.byMaterial shape)
+if (lastPack?.unplaced?.length) {
+  console.warn("Unplaced parts:", lastPack.unplaced);
+}
+if (lastPack?.byMaterial && Object.keys(lastPack.byMaterial).length) {
+  openSheetsModal(lastPack);
+}
+
+// Also render in-page pager with all sheets flattened
+const sheets: SheetLayout[] = lastPack?.byMaterial
+  ? (Object.values(lastPack.byMaterial) as any[]).flat()
+  : (Array.isArray(lastPack?.sheets) ? lastPack.sheets : []);
+if (sheets.length) {
+  emit(Events.LAYOUTS_READY, { sheets });
+} else {
+  setStatus("err", "No sheets produced. Check material tags and dimensions.");
+}
+
+
+        // Render modal for per-material inspection
+        if (lastPack.unplaced?.length) {
           console.warn("Unplaced parts:", lastPack.unplaced);
         }
-        if (Object.keys(lastPack.byMaterial).length) {
+        if (Object.keys(lastPack.byMaterial ?? {}).length) {
           openSheetsModal(lastPack);
         }
+
+// Also render in-page pager
+const allSheets: SheetLayout[] = Object.values(lastPack.byMaterial ?? {}).flat();
+emit(Events.LAYOUTS_READY, { sheets: allSheets });
+
       },
       savedDefaults ?? undefined,
       rows // live preview inside the drawer
@@ -429,17 +625,19 @@ async function handleMaterialsCsv(file: File | null) {
       return;
     }
 
-    const required = ["Name", "BoardLength", "BoardWidth", "Thickness"];
-    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
-    const H = new Set(headers.map(norm));
-    const missing = required.filter(r => !H.has(norm(r)));
-    if (missing.length) {
-      setMaterialsStatus("err", `Missing column(s): ${missing.join(", ")}`);
+    // Build row objects {header: cell}
+    const objects = rows.map((r) =>
+      Object.fromEntries(headers.map((h, idx) => [h, r[idx] ?? ""]))
+    );
+
+    const boards = materialsRowsToBoards(objects);
+    if (!boards.length) {
+      setMaterialsStatus("err", "No valid rows. Expected BoardLength & BoardWidth (mm).");
       return;
     }
 
-    setMaterialsStatus("ok", `Loaded ${rows.length.toLocaleString()} material row(s). Delimiter: "${delimiter}"`);
-    // TODO: add to materials library state
+    setBoards(boards);
+    setMaterialsStatus("ok", `Loaded ${boards.length.toLocaleString()} board spec(s). Delimiter: "${delimiter}"`);
   } catch (err: any) {
     console.error(err);
     setMaterialsStatus("err", `Failed: ${err?.message ?? err}`);
@@ -462,9 +660,27 @@ materialsFileInput?.addEventListener("change", () => {
   pendingMaterialsFile = materialsFileInput.files && materialsFileInput.files[0] ? materialsFileInput.files[0] : null;
   setMaterialsStatus("neutral", pendingMaterialsFile ? `Selected: ${pendingMaterialsFile.name}` : "");
 });
+// Master materials – open picker on click, then process immediately on selection
 uploadMaterialsBtn?.addEventListener("click", () => {
-  void handleMaterialsCsv(pendingMaterialsFile ?? (materialsFileInput?.files?.[0] ?? null));
+  materialsFileInput?.click();
+});
+
+materialsFileInput?.addEventListener("change", async () => {
+  const file = materialsFileInput?.files?.[0] ?? null;
+  if (!file) {
+    setMaterialsStatus("err", "No file selected.");
+    return;
+  }
+  setMaterialsStatus("neutral", `Reading ${file.name}…`);
+  try {
+    await handleMaterialsCsv(file);              // ← parse + setBoards happens here
+    setMaterialsStatus("ok", `Loaded materials from ${file.name}`);
+  } finally {
+    // allow picking the same file again (browsers won't fire change if same file name otherwise)
+    materialsFileInput.value = "";
+  }
 });
 
 // Prevent form submits from reloading the page (in case you wrap controls later)
 document.addEventListener("submit", (e) => e.preventDefault());
+

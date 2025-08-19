@@ -1,9 +1,13 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0" />
     <title>Operator Cut – CSV Intake</title>
+    <!-- Important for Vite module resolution in Codespaces -->
+    <base href="/" />
     <style>
       :root { font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
       body { margin: 0; background: #f9fafb; color: #111827; }
@@ -21,18 +25,13 @@
       #preview h3 { margin: 16px 0 8px; }
       table { border-collapse: collapse; width: 100%; background: #fff; }
       th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
-      
-    
-     
-    
-
     </style>
   </head>
   <body>
     <header>
       <div class="row">
         <input id="fileInput" type="file" accept=".csv,text/csv" />
-        <button id="uploadBtn">Upload</button>
+        <button id="uploadBtn" type="button">Upload</button>
         <span id="fileName">No file chosen</span>
       </div>
       <div id="status" class="status">Ready</div>
@@ -41,16 +40,24 @@
     <main>
       <div id="preview"></div>
 
+      <!-- Settings panel target -->
+      <div id="settings"></div>
+
+      <!-- SVG pager target -->
+      <div id="board-svg"></div>
+
+      <!-- Master Materials controls (these IDs match main.ts) -->
       <div class="row" style="gap:12px;">
-        <input id="materialsFileInput" type="file" accept=".csv" />
-        <button id="uploadMaterialsBtn">Upload Master Materials CSV</button>
+        <input id="materialsFileInput" type="file" accept=".csv,text/csv" />
+        <button id="uploadMaterialsBtn" type="button">Upload Master Materials CSV</button>
         <span id="materialsStatus" class="status"></span>
       </div>
 
+      <!-- Optional legacy host; safe to keep -->
       <div id="boardHost" data-material="" data-index=""></div>
     </main>
 
-    <!-- Load ONLY main.ts; do not import HTML anywhere -->
+    <!-- Vite entry: must be type="module" and absolute path -->
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

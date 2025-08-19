@@ -1,0 +1,56 @@
+{
+  "baseURL": "http://localhost:5173/",
+  "viewport": {
+    "width": 1280,
+    "height": 800
+  },
+  "results": [
+    {
+      "selector": "#settings",
+      "present": true,
+      "visible": true,
+      "box": {
+        "x": 32,
+        "y": 94,
+        "width": 1216,
+        "height": 85
+      },
+      "offscreen": false
+    },
+    {
+      "selector": "#board-svg",
+      "present": true,
+      "visible": true,
+      "box": {
+        "x": 32,
+        "y": 227,
+        "width": 1216,
+        "height": 482
+      },
+      "offscreen": false
+    },
+    {
+      "selector": "#header-map-drawer",
+      "present": false
+    },
+    {
+      "selector": "#raw-preview",
+      "present": false
+    },
+    {
+      "selector": "#normalized-preview",
+      "present": false
+    }
+  ],
+  "console": [
+    {
+      "type": "debug",
+      "text": "[vite] connecting..."
+    },
+    {
+      "type": "debug",
+      "text": "[vite] connected."
+    }
+  ],
+  "errors": []
+}

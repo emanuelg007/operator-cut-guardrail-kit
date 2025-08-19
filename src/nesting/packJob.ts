@@ -1,5 +1,14 @@
 // src/nesting/packJob.ts
 import type { NormalizedPart } from "../csv/normalize";
+import { packPartsToSheets, type PackResult } from "./engine";
+import { emit, Events } from "../events";
+
+
+// Satisfy existing re-exports from src/index.ts
+export type PackerSettings = { units: "mm" | "cm" | "in"; kerf: number; margin: number; };
+export type PieceReq = unknown;   // replace with your real piece type later
+export type PackedJob = unknown;  // replace with PackResult when you migrate
+
 
 export interface PlacedPart {
   name: string;
@@ -131,7 +140,8 @@ export function packJob(parts: NormalizedPart[], opts: PackOptions): Sheet[] {
       rowH = Math.max(rowH, h);
       return pos;
     }
-  }
+  }const result: PackResult = packPartsToSheets(boards, parts);
+emit(Events.LAYOUTS_READY, result);
 
   return sheets;
 }

@@ -1,0 +1,25 @@
+/* src/styles/app.css */
+:root { --panel-gap: 12px; }
+
+#settings {
+  margin: 16px;
+}
+
+#board-svg {
+  /* Ensure it’s visible even before the pager renders anything */
+  min-height: 60vh;
+  margin: 16px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  position: relative;
+  overflow: hidden;
+}
+
+#board-svg .empty-state {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font: 500 14px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  color: #666;
+}
