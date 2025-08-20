@@ -1,77 +1,67 @@
-// src/materials/toBoards.ts
 import type { BoardSpec, Grain } from "../nesting/types";
 
-// ---------- helpers ----------
-function num(v: any, d = 0): number {
-  if (v === null || v === undefined || v === "") return d;
-  const s = String(v).trim().replace(/,/g, ".");
-  const m = s.match(/^(-?\d+(?:\.\d+)?)/);
-  const n = m ? Number(m[1]) : Number(s);
-  return Number.isFinite(n) ? n : d;
-}
-function str(v: any, d = ""): string {
-  if (v === null || v === undefined) return d;
-  const s = String(v).trim();
-  return s.length ? s : d;
-}
-function pick(row: Record<string, any>, keys: string[], d?: any) {
-  for (const k of keys) if (k in row && row[k] !== "" && row[k] !== undefined) return row[k];
-  return d;
-}
+function normStr(v: any): string { return String(v ?? "").trim(); }
+function normLower(v: any): string { return normStr(v).toLowerCase(); }
+
 function grainFrom(v: any): Grain {
-  const s = String(v ?? "").toLowerCase().trim();
-  if (s === "alongx" || s === "width") return "alongX";
-  if (s === "alongy" || s === "length") return "alongY";
+  const s = normLower(v);
+  if (s === "alongx" || s === "width" || s === "x" || s === "horizontal" || s === "lengthwise") return "alongX";
+  if (s === "alongy" || s === "length" || s === "y" || s === "vertical" || s === "crosswise") return "alongY";
   return "none";
 }
 
-// ---------- main ----------
-/**
- * Convert parsed materials CSV rows into BoardSpec[].
- * Expects millimetres; supports strict keys and common aliases.
- *
- * Canonical fields:
- *  - MaterialTag (string)
- *  - BoardLength (number, mm)
- *  - BoardWidth  (number, mm)
- *  - Thickness   (number, mm)
- * Optional:
- *  - Copies, Grain, BoardID
- */
-export function materialsRowsToBoards(rows: Array<Record<string, any>>): BoardSpec[] {
+function copiesFrom(v: any): number | "infinite" | undefined {
+  const s = normLower(v);
+  if (!s) return undefined;
+  if (s === "inf" || s === "infinite" || s === "∞") return "infinite";
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : undefined;
+}
+
+/** Convert a generic CSV row object into a BoardSpec. */
+export function rowToBoard(row: Record<string, any>): BoardSpec | null {
+  const width =
+    Number(row.BoardWidth ?? row.Width ?? row.W ?? row.boardW ?? row.Board_W) || 0;
+  const height =
+    Number(row.BoardLength ?? row.Length ?? row.H ?? row.boardH ?? row.Board_H) || 0;
+
+  if (width <= 0 || height <= 0) return null;
+
+  const thickness =
+    Number(row.Thickness ?? row.thickness ?? row.BoardThickness ?? row.T) || undefined;
+
+  const materialTag = normStr(row.MaterialTag ?? row.Material ?? row.Name ?? row.materialTag ?? row.material);
+  const grain = grainFrom(row.Grain ?? row.GrainDirection ?? row.grain ?? row.Direction);
+
+  const copies = copiesFrom(row.Copies ?? row.Sheets ?? row.copies);
+
+  const idBase = row.ID ?? row.Id ?? row.Name ?? materialTag;
+  const id = normStr((idBase ?? "") || "");
+  const nameBase = row.Name ?? materialTag ?? id;
+  const name = normStr((nameBase ?? "") || "Board");
+
+  return {
+    id: id || undefined,
+    name,
+    width,
+    height,
+    thickness,
+    materialTag: materialTag || undefined,
+    grain,
+    copies,
+    units: "mm",
+  };
+}
+
+/** Convert an array of generic CSV row objects into BoardSpecs. */
+export function rowsToBoards(rows: Array<Record<string, any>>): BoardSpec[] {
   const out: BoardSpec[] = [];
-  let auto = 0;
-
-  for (const row of rows) {
-    // Required
-    const lengthMm = num(
-      pick(row, ["BoardLength", "Sheet Length (mm)", "Sheet Length", "Board Length", "board length", "sheetLength"]),
-      NaN
-    );
-    const widthMm = num(
-      pick(row, ["BoardWidth", "Sheet Width (mm)", "Sheet Width", "Board Width", "board width", "sheetWidth"]),
-      NaN
-    );
-    if (Number.isNaN(lengthMm) || Number.isNaN(widthMm)) continue; // skip bad rows
-
-    const materialTag = str(pick(row, ["MaterialTag", "Material Tag", "Material", "materialTag"], ""));
-
-    // Optional
-    const boardId = str(pick(row, ["BoardID", "Board Id", "Board ID", "boardId"], "")) || `board-${auto++}`;
-    const copies = Math.max(1, num(pick(row, ["Copies", "Quantity", "Stock", "copies"], 1)));
-    const grain = grainFrom(pick(row, ["Grain", "grain"], "none"));
-
-    // IMPORTANT: engine expects Rect { w, h } => map Width→w (X), Length→h (Y)
-    out.push({
-      id: boardId,
-      width: widthMm,
-      height: lengthMm,
-      copies,
-      materialTag: materialTag || undefined,
-      grain, // retained if your types include it; otherwise harmless extra prop
-    } as BoardSpec);
+  for (const r of rows) {
+    const b = rowToBoard(r);
+    if (b) out.push(b);
   }
-
   return out;
 }
 
+/** Back-compat export name some modules import. */
+export { rowsToBoards as materialsRowsToBoards };

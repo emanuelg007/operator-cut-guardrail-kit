@@ -33,14 +33,13 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
     }
 
     const sheet = layouts[i];
-    pageLabel.textContent = `Sheet ${i + 1} / ${layouts.length} — ${sheet.boardId} #${sheet.boardIdx + 1}`;
+    pageLabel.textContent = `Sheet ${i + 1} / ${layouts.length} — ${sheet.boardId ?? ""} ${sheet.boardIdx != null ? `#${sheet.boardIdx + 1}` : ""}`;
 
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("width", "100%");
     svg.setAttribute("height", "100%");
     svg.setAttribute("viewBox", `0 0 ${sheet.width} ${sheet.height}`);
 
-    // Background
     const bg = document.createElementNS(svg.namespaceURI, "rect");
     bg.setAttribute("x", "0");
     bg.setAttribute("y", "0");
@@ -50,8 +49,7 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
     bg.setAttribute("stroke", "#999");
     svg.appendChild(bg);
 
-    // Parts
-    for (const p of sheet.placed) {
+    for (const p of sheet.placed ?? []) {
       const r = document.createElementNS(svg.namespaceURI, "rect");
       r.setAttribute("x", String(p.x));
       r.setAttribute("y", String(p.y));
@@ -68,7 +66,7 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
       label.setAttribute("dominant-baseline", "middle");
       label.setAttribute("text-anchor", "middle");
       label.setAttribute("font-size", "8");
-      label.textContent = p.name || p.id;
+      label.textContent = (p as any).name || (p as any).id || "";
       svg.appendChild(label);
     }
 
@@ -83,9 +81,9 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
     let startX = 0, startY = 0;
 
     const apply = () => {
-      let g = svg.querySelector<SVGGElement>("g[data-root]");
+      let g = svg.querySelector("g[data-root]") as SVGGElement | null;
       if (!g) {
-        g = document.createElementNS(svg.namespaceURI, "g");
+        g = document.createElementNS(svg.namespaceURI, "g") as SVGGElement;
         g.setAttribute("data-root", "1");
         const children = Array.from(svg.childNodes);
         for (const c of children) g.appendChild(c);
@@ -96,23 +94,29 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
 
     svg.addEventListener("wheel", (e) => {
       e.preventDefault();
-      const delta = Math.sign(e.deltaY);
+      const delta = Math.sign((e as WheelEvent).deltaY);
       const factor = delta > 0 ? 0.9 : 1.1;
       scale = Math.max(0.1, Math.min(10, scale * factor));
       apply();
     }, { passive: false });
 
     svg.addEventListener("pointerdown", (e) => {
-      panning = true; startX = e.clientX; startY = e.clientY; svg.setPointerCapture(e.pointerId);
+      const ev = e as PointerEvent;
+      panning = true; startX = ev.clientX; startY = ev.clientY; svg.setPointerCapture(ev.pointerId);
     });
     svg.addEventListener("pointermove", (e) => {
       if (!panning) return;
-      originX += (e.clientX - startX) / scale;
-      originY += (e.clientY - startY) / scale;
-      startX = e.clientX; startY = e.clientY;
+      const ev = e as PointerEvent;
+      originX += (ev.clientX - startX) / scale;
+      originY += (ev.clientY - startY) / scale;
+      startX = ev.clientX; startY = ev.clientY;
       apply();
     });
-    svg.addEventListener("pointerup", (e) => { panning = false; svg.releasePointerCapture?.(e.pointerId); });
+    svg.addEventListener("pointerup", (e) => {
+      const ev = e as PointerEvent;
+      panning = false;
+      svg.releasePointerCapture?.(ev.pointerId);
+    });
     apply();
   }
 
@@ -124,35 +128,4 @@ export function createBoardPager(container: HTMLElement, layouts: SheetLayout[])
   return { go, next: () => go(idx + 1), prev: () => go(idx - 1), currentIndex: () => idx };
 }
 
-/**
- * Legacy-compatible shim:
- * - renderBoardSvg(layouts)                        // old style (auto-uses #board-svg)
- * - renderBoardSvg(containerEl, layouts)          // new style
- * Prefer the named createBoardPager() in new code.
- */
-export function renderBoardSvg(a: HTMLElement | SheetLayout[] | null | undefined, b?: SheetLayout[]) {
-  let container: HTMLElement | null;
-  let layouts: SheetLayout[];
-
-  if (Array.isArray(a) && !b) {
-    // old signature: (layouts)
-    container = document.getElementById("board-svg");
-    layouts = a;
-  } else {
-    container = a as HTMLElement | null;
-    layouts = b ?? [];
-  }
-
-  if (!container) {
-    console.warn("renderBoardSvg: container not found; looked for #board-svg");
-    return;
-  }
-  if (!Array.isArray(layouts)) {
-    console.warn("renderBoardSvg: layouts missing/invalid");
-    return;
-  }
-  createBoardPager(container, layouts);
-}
-
-// Keep the alias users may already import
-export { renderBoardSvg as default };
+export { createBoardPager as default };

@@ -1,209 +1,165 @@
-// Commercial-grade packer: MaxRects primary, Skyline fallback; kerf, margins,
-// grain/rotation constraints, autosplit over copies.
 import { getKerfMM, getMarginMM } from "../state/settings";
 import { maxRectsPack } from "./maxRects";
-import { skylinePack } from "./skyline";
-import { Rect } from "./rect";
-import {
+import type {
   BoardSpec,
   NestablePart,
-  PackResult,
-  PlacedPart,
   SheetLayout,
+  PackResultByMaterial,
+  Grain,
 } from "./types";
+import type { Rect } from "./rect";
 
-interface ExpandedItem {
-  // dimensions after kerf expansion
-  w: number; h: number; allowRotate: boolean;
-  // original identity
-  srcIdx: number;
-  rotationConstraint: 0 | 90 | null; // null => free to choose
+export interface PackOptions {
+  kerf?: number;
+  margin?: number;
+  allowRotateDefault?: boolean;
+  heuristic?: "BSSF";
+  grain?: Grain;
+  materialRotate?: boolean;
 }
 
-function honorsGrain(part: NestablePart, rotated: boolean): boolean {
-  if (part.grain === "none") return true;
-  // alongX: long grain along X => a rotated placement (90°) flips axes
-  // We interpret 'grain alongX' as the grain must align with sheet X axis.
-  // If part's long edge is along X before rotation, rotation flips it.
-  const longAlongX = part.w >= part.h;
-  if (part.grain === "alongX") {
-    return rotated ? !longAlongX : longAlongX;
-  }
-  // alongY
-  const longAlongY = part.h >= part.w;
-  if (part.grain === "alongY") {
-    return rotated ? !longAlongY : longAlongY;
-  }
-  return true;
+/** Group helper */
+function lc(s: any): string { return String(s ?? "").trim().toLowerCase(); }
+function materialOfPart(p: NestablePart): string { return lc(p.materialTag ?? p.material); }
+function materialOfBoard(b: BoardSpec): string { return lc(b.materialTag); }
+
+function rotationLockFor(p: NestablePart): "X" | "Y" | null {
+  const g = (p.grain ?? "none");
+  if (g === "alongX") return "X";
+  if (g === "alongY") return "Y";
+  return null;
 }
 
 export function packPartsToSheets(
   boards: BoardSpec[],
   parts: NestablePart[],
-): PackResult {
-  const kerf = getKerfMM();
-  const margin = getMarginMM();
-if (!Array.isArray(boards) || !Array.isArray(parts)) {
-  throw new Error(`packPartsToSheets expects (boards[], parts[], options).`);
-}
-  // Build a flat demand list
+  opts: PackOptions = {}
+): PackResultByMaterial {
+  const kerf = opts.kerf ?? getKerfMM();
+  const margin = opts.margin ?? getMarginMM();
+  const allowRotateDefault = opts.allowRotateDefault ?? true;
+
+  // Expand demand by qty
   const demand: NestablePart[] = [];
   for (const p of parts) {
-    for (let i = 0; i < p.qty; i++) demand.push({ ...p, qty: 1 });
+    const qty = Math.max(0, Math.trunc(p.qty ?? 0));
+    for (let i = 0; i < qty; i++) demand.push({ ...p, qty: 1 });
   }
 
-  // Group by board id (or by materialTag if you prefer). Here: by board id order.
-  const outSheets: SheetLayout[] = [];
-  const unplacedMap = new Map<string, number>();
+  // Boards by material — respect copies (number | "infinite")
+  const boardsByMat = new Map<string, BoardSpec[]>();
+  for (const b of boards) {
+    const m = materialOfBoard(b);
+    const arr = boardsByMat.get(m) ?? [];
+    const copies =
+      b.copies === "infinite" ? Number.MAX_SAFE_INTEGER : Math.max(0, b.copies ?? 1);
+    for (let i = 0; i < copies; i++) arr.push(b);
+    boardsByMat.set(m, arr);
+  }
 
-  for (const board of boards) {
-    // Filter parts compatible by materialTag (if provided)
-    const todo = demand.filter(p => !p.materialTag || !board.materialTag || p.materialTag === board.materialTag);
-    if (todo.length === 0) continue;
+  // Materials present
+  const mats = new Set<string>();
+  for (const p of demand) mats.add(materialOfPart(p));
+  for (const [m] of boardsByMat) mats.add(m);
 
-    const copies = board.copies === "infinite" ? Number.MAX_SAFE_INTEGER : Math.max(0, board.copies);
-    let copyIdx = 0;
+  const byMaterial: Record<string, SheetLayout[]> = {};
+  const unplaced: NestablePart[] = [];
 
-    // Try to place as many of the still-unplaced 'todo' as possible across copies
-    while (copyIdx < copies && todo.some(p => p.qty > 0)) {
-      const sheetRect: Rect = {
-        x: 0,
-        y: 0,
-        w: Math.max(0, board.width - 2 * margin),
-        h: Math.max(0, board.height - 2 * margin),
-      };
-      if (sheetRect.w <= 0 || sheetRect.h <= 0) break;
+  for (const m of mats) {
+    const matParts = demand.filter(p => materialOfPart(p) === m);
+    if (matParts.length === 0) continue;
 
-      // Build expanded items list for parts not yet placed (for this board)
-      const expanded: ExpandedItem[] = [];
-      const srcRefs: NestablePart[] = [];
-      for (let i = 0; i < todo.length; i++) {
-        const p = todo[i];
-        if (p.qty <= 0) continue;
+    const matBoards = boardsByMat.get(m) ?? [];
+    if (matBoards.length === 0) { unplaced.push(...matParts); continue; }
 
-        // Expand dims by kerf (reserve spacing). We expand width/height by kerf.
+    const layouts: SheetLayout[] = [];
+    // Remaining counts per part-id/name tuple
+    const remaining = new Map<string, { p: NestablePart; left: number }>();
+    const keyOf = (p: NestablePart) => (p.id ?? `${p.name}:${p.w}x${p.h}`);
+
+    for (const p of matParts) {
+      const k = keyOf(p);
+      const rec = remaining.get(k);
+      if (rec) rec.left += 1;
+      else remaining.set(k, { p, left: 1 });
+    }
+
+    for (let copyIdx = 0; copyIdx < matBoards.length; copyIdx++) {
+      const board = matBoards[copyIdx];
+
+      const W = Math.max(0, (board.width ?? 0) - 2 * margin);
+      const H = Math.max(0, (board.height ?? 0) - 2 * margin);
+      const sheet: Rect = { x: 0, y: 0, w: W, h: H };
+
+      // Build pack items from still-needed parts
+      type PackItem = { k: string; w: number; h: number; allowRotate: boolean; src: NestablePart };
+      const items: PackItem[] = [];
+      for (const { p, left } of remaining.values()) {
+        if (left <= 0) continue;
+        const lock = rotationLockFor(p);
+        const allowRotate = (p.canRotate ?? allowRotateDefault) && lock === null;
+
+        // inflate dims by kerf to approximate saw thickness
         const ew = p.w + kerf;
         const eh = p.h + kerf;
 
-        // If kerf makes it impossible (smaller than kerf), skip with unplaced later
-        if (ew <= 0 || eh <= 0) continue;
+        // We'll let packer try both rotations; lock prevents rotation later on placement acceptance.
+        items.push({ k: keyOf(p), w: ew, h: eh, allowRotate, src: p });
+      }
 
-        // Rotation constraint from grain
-        let rotationConstraint: 0 | 90 | null = null;
-        if (p.grain === "alongX") {
-          rotationConstraint = (p.w >= p.h) ? 0 : 90;
-        } else if (p.grain === "alongY") {
-          rotationConstraint = (p.h >= p.w) ? 0 : 90;
-        }
+      if (!items.length) break;
 
-        expanded.push({
-          w: ew, h: eh, allowRotate: p.canRotate && rotationConstraint === null,
-          srcIdx: srcRefs.length,
-          rotationConstraint,
+      const placements = maxRectsPack(sheet, items.map(it => ({ w: it.w, h: it.h })));
+
+      const placed: SheetLayout["placed"] = [];
+      for (let i = 0; i < placements.length; i++) {
+        const plc = placements[i];
+        if (!plc || plc.rect.w === 0 || plc.rect.h === 0) continue;
+
+        const it = items[i];
+        if (plc.rotated && !it.allowRotate) continue; // respect rotation lock
+
+        const rec = remaining.get(it.k);
+        if (!rec || rec.left <= 0) continue;
+        rec.left -= 1;
+
+        placed.push({
+          id: it.src.id,
+          name: it.src.name,
+          x: plc.rect.x + margin,
+          y: plc.rect.y + margin,
+          w: it.src.w,
+          h: it.src.h,
+          rotated: plc.rotated,
+          material: it.src.materialTag ?? it.src.material,
+          rotation: plc.rotated ? 90 : 0,
+          boardIdx: copyIdx,
         });
-        srcRefs.push(p);
       }
 
-      if (expanded.length === 0) break;
-
-      // Primary: MaxRects
-      const mr = maxRectsPack(sheetRect, expanded.map(e => ({
-        w: e.w, h: e.h, allowRotate: e.allowRotate || e.rotationConstraint === 90,
-      })));
-
-      // Build placements that honored grain; anything that failed (null or grain fail) will try skyline
-      const needFallback: number[] = [];
-      const taken: (PlacedPart | null)[] = new Array(expanded.length).fill(null);
-
-      for (let i = 0; i < expanded.length; i++) {
-        const plc = mr[i];
-        if (!plc) { needFallback.push(i); continue; }
-
-        const src = srcRefs[expanded[i].srcIdx];
-        const rotate = (plc.rotated ? 90 : 0) as 0 | 90;
-        // If rotation constrained, enforce it
-        if (expanded[i].rotationConstraint !== null && rotate !== expanded[i].rotationConstraint) {
-          needFallback.push(i); continue;
-        }
-        if (!honorsGrain(src, plc.rotated)) { needFallback.push(i); continue; }
-
-        // Convert expanded rect -> drawable coords (center kerf gap)
-        const dx = plc.rect.x + margin + (kerf / 2);
-        const dy = plc.rect.y + margin + (kerf / 2);
-        const dw = (expanded[i].w - kerf);
-        const dh = (expanded[i].h - kerf);
-
-        taken[i] = {
-          id: src.id, name: src.name, x: dx, y: dy, w: dw, h: dh,
-          rotation: rotate, boardIdx: copyIdx,
-        };
-      }
-
-      if (needFallback.length) {
-        // Fallback Skyline for the remaining
-        const remaining = needFallback.map(i => expanded[i]);
-        const sky = skylinePack(sheetRect, remaining.map(e => ({
-          w: e.w, h: e.h, allowRotate: e.allowRotate || e.rotationConstraint === 90,
-        })));
-
-        for (let k = 0; k < remaining.length; k++) {
-          const rIdx = needFallback[k];
-          const plc = sky[k];
-          if (!plc) continue;
-
-          const src = srcRefs[expanded[rIdx].srcIdx];
-          const rotate = (plc.rotated ? 90 : 0) as 0 | 90;
-          if (expanded[rIdx].rotationConstraint !== null && rotate !== expanded[rIdx].rotationConstraint) continue;
-          if (!honorsGrain(src, plc.rotated)) continue;
-
-          const dx = plc.rect.x + margin + (kerf / 2);
-          const dy = plc.rect.y + margin + (kerf / 2);
-          const dw = (expanded[rIdx].w - kerf);
-          const dh = (expanded[rIdx].h - kerf);
-
-          taken[rIdx] = {
-            id: src.id, name: src.name, x: dx, y: dy, w: dw, h: dh,
-            rotation: rotate, boardIdx: copyIdx,
-          };
-        }
-      }
-
-      // Assemble sheet result + decrement placed demand
-      const placed = taken.filter(Boolean) as PlacedPart[];
-      for (const plc of placed) {
-        const src = srcRefs.find(p => p.id === plc.id)!;
-        // decrement one (this sheet placed only 1 per expanded item)
-        const inTodo = todo.find(p => p.id === src.id);
-        if (inTodo && inTodo.qty > 0) inTodo.qty -= 1;
-      }
-
-      if (placed.length > 0) {
-        outSheets.push({
+      if (placed.length) {
+        layouts.push({
           boardId: board.id,
           boardIdx: copyIdx,
           width: board.width,
           height: board.height,
           placed,
-          waste: [], // can be computed later from free rectangles if desired
         });
       }
 
-      copyIdx += 1;
+      // If everything is placed, stop consuming more copies
+      let anyLeft = false;
+      for (const rec of remaining.values()) { if (rec.left > 0) { anyLeft = true; break; } }
+      if (!anyLeft) break;
     }
+
+    // Whatever remains after all copies are used is unplaced
+    for (const rec of remaining.values()) {
+      for (let i = 0; i < rec.left; i++) unplaced.push(rec.p);
+    }
+
+    byMaterial[m || ""] = layouts;
   }
 
-  // Any leftover demand becomes unplaced
-  for (const p of demand) {
-    const left = Math.max(0, p.qty);
-    if (left > 0) unplacedMap.set(p.id, (unplacedMap.get(p.id) || 0) + left);
-  }
-
-  return {
-    sheets: outSheets,
-    unplaced: [...unplacedMap.entries()].map(([id, count]) => {
-      const proto = parts.find(p => p.id === id)!;
-      return { part: proto, count };
-    }),
-  };
+  return { byMaterial, unplaced };
 }
-export type { PackResult } from "./types";

@@ -1,74 +1,45 @@
-import { parseCsv } from "../utils/csv";
-import { materialsRowsToBoards } from "../materials/toBoards";
-import { setBoards } from "../state/materials";
+// src/ui/materials-upload.ts
+import { ingestMaterialsCsvText } from "../materials/ingest";
 import { emit, Events } from "../events";
 
-function ensureButton(container: HTMLElement): HTMLButtonElement {
-  let btn = container.querySelector<HTMLButtonElement>("#materialsUploadBtn");
-  if (btn) return btn;
-  btn = document.createElement("button");
-  btn.id = "materialsUploadBtn";
-  btn.type = "button";
-  btn.textContent = "Upload Master Materials (CSV)";
-  btn.style.marginRight = "8px";
-  container.prepend(btn);
-  return btn;
+function setStatus(el: HTMLElement | null, type: "ok" | "err" | "neutral", msg: string) {
+  if (!el) return;
+  el.className = "status " + (type === "ok" ? "ok" : type === "err" ? "err" : "");
+  el.textContent = msg;
 }
 
-function ensureFileInput(): HTMLInputElement {
-  let inp = document.getElementById("materialsFile") as HTMLInputElement | null;
-  if (inp) return inp;
-  inp = document.createElement("input");
-  inp.type = "file"; inp.accept = ".csv,text/csv"; inp.id = "materialsFile";
-  inp.style.display = "none";
-  document.body.appendChild(inp);
-  return inp;
-}
+export function wireMaterialsUploadUI() {
+  const input = document.getElementById("materialsFileInput") as HTMLInputElement | null;
+  const btn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
+  const status = document.getElementById("materialsStatus") as HTMLElement | null;
 
-async function readFileAsText(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onerror = () => reject(fr.error);
-    fr.onload = () => resolve(String(fr.result ?? ""));
-    fr.readAsText(file);
+  if (!input || !btn || !status) return;
+
+  // Clicking the button opens the file chooser
+  btn.addEventListener("click", () => input.click());
+
+  // When a file is selected, parse & load it
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0] ?? null;
+    if (!file) {
+      setStatus(status, "err", "No file selected.");
+      return;
+    }
+    setStatus(status, "neutral", `Selected: ${file.name}`);
+
+    try {
+      const text = await file.text();
+      const res = ingestMaterialsCsvText(text);
+      setStatus(status, "ok", `Loaded ${res.count} board(s) from ${file.name} (delimiter "${res.delimiter}")`);
+      emit(Events.MATERIALS_LOADED, { count: res.count });
+    } catch (e: any) {
+      setStatus(status, "err", `Failed to load: ${e?.message ?? e}`);
+    } finally {
+      // reset input so re-selecting same file will still fire change
+      input.value = "";
+    }
   });
 }
 
-export function initMaterialsUpload() {
-  const settings = document.getElementById("settings");
-  if (!settings) {
-    console.warn("[materials-upload] #settings not found; deferring init.");
-    return;
-  }
-  const btn = ensureButton(settings);
-  const input = ensureFileInput();
-
-  btn.onclick = () => input.click();
-
-  input.onchange = async () => {
-    const f = input.files?.[0];
-    if (!f) return;
-    try {
-      const text = await readFileAsText(f);
-      const rows = parseCsv(text);
-      const boards = materialsRowsToBoards(rows);
-      if (!boards.length) {
-        alert("No valid boards found. Check headers: MaterialTag, BoardLength, BoardWidth, Thickness.");
-        return;
-      }
-      setBoards(boards);
-      emit(Events.MATERIALS_LOADED, { count: boards.length });
-      console.log(`[materials-upload] Ingested ${boards.length} board spec(s) from ${f.name}`);
-    } catch (e) {
-      console.error("[materials-upload] failed:", e);
-      alert("Failed to load Master Materials CSV. See console for details.");
-    } finally {
-      input.value = ""; // allow re-selecting the same file
-    }
-  };
-}
-
-// auto-init after DOM is ready
-window.addEventListener("DOMContentLoaded", () => {
-  try { initMaterialsUpload(); } catch (e) { console.error(e); }
-});
+// Auto-wire on module import
+try { wireMaterialsUploadUI(); } catch {}
