@@ -1,8 +1,7 @@
 // src/main.ts
 import { parseCsv } from "./csv/parseCsv";
-// NOTE: we no longer validate before mapping; mapping comes first
-// import { validateRequiredColumns } from "./csv/validateRows";
 import { normalizeRows, type Mapping } from "./csv/normalize";
+import { autoMapHeaders, mappingMissing } from "./csv/autoMap";
 import { openHeaderMapModal } from "./ui/modals/header-map-modal";
 
 import { initSettingsUI } from "./ui/settings";
@@ -185,7 +184,7 @@ function openPartDetails(p: NestablePart) {
   table.style.borderCollapse = "collapse";
 
   const tbody = document.createElement("tbody");
-  const entries = Object.entries(p as Record<string, unknown>);
+  const entries = Object.entries(p as unknown as Record<string, unknown>);
   for (const [k, v] of entries) {
     const tr = document.createElement("tr");
     const ktd = document.createElement("td");
@@ -227,14 +226,6 @@ function openPartDetails(p: NestablePart) {
 
   overlay.appendChild(card);
   document.body.appendChild(overlay);
-}
-
-/* --------------------- MAPPING VALIDATION AFTER MAPPER -------------------- */
-
-function isMappingComplete(m: Mapping): { ok: boolean; missing: string[] } {
-  const need = ["Name", "Material", "Length", "Width", "Qty"] as const;
-  const missing = need.filter((k) => !m[k] || String(m[k]).trim() === "");
-  return { ok: missing.length === 0, missing: missing as string[] };
 }
 
 /* ------------------------ MATERIALS UPLOAD + AUTOPACK --------------------- */
@@ -297,39 +288,57 @@ async function handleCuttingList(file: File | null) {
     setStatus("ok", `Loaded ${rows.length.toLocaleString()} row(s). Delimiter detected: "${delimiter}"`);
     buildRawPreview(headers, rows);
 
-    const savedDefaults = (() => {
+    // Seed auto-map with last saved mapping (if any)
+    const savedDefaults: Partial<Mapping> | null = (() => {
       try { return JSON.parse(localStorage.getItem("oc:lastMapping") || "null"); }
       catch { return null; }
     })();
 
-    // Map first, then validate the mapping itself
-    openHeaderMapModal(
-      headers,
-      (mapping) => {
-        try { localStorage.setItem("oc:lastMapping", JSON.stringify(mapping)); } catch {}
+    const guess = autoMapHeaders(headers, savedDefaults ?? undefined);
+    const missing = mappingMissing(guess);
 
-        const mv = isMappingComplete(mapping);
-        if (!mv.ok) {
-          setStatus("err", `Header mapping incomplete. Missing: ${mv.missing.join(", ")}`);
-          return;
-        }
+    // Always show drawer unless explicitly suppressed with ?map=0
+    const urlForce = new URLSearchParams(location.search).get("map");
+    const shouldOpenDrawer = urlForce !== "0";
 
-        const normalized = normalizeRows(headers, rows, mapping);
+    if (shouldOpenDrawer) {
+      openHeaderMapModal(
+        headers,
+        (mapping) => {
+          try { localStorage.setItem("oc:lastMapping", JSON.stringify(mapping)); } catch {}
+          const normalized = normalizeRows(headers, rows, mapping);
+          if (normalized.length === 0) {
+            setStatus("err", "Mapping applied, but no valid rows were produced (check required fields).");
+            return;
+          }
+          clearPreview();
+          setStatus("ok", `Mapped to ${normalized.length.toLocaleString()} part(s).`);
+          buildNormalizedPreview(normalized);
+          lastParts = normalized;
+          void repackAndRender();
+        },
+        guess,  // prefill the drawer with our best guess (even if complete)
+        rows
+      );
+    } else {
+      // Silent path (used only if you pass ?map=0)
+      if (missing.length === 0) {
+        try { localStorage.setItem("oc:lastMapping", JSON.stringify(guess)); } catch {}
+        const normalized = normalizeRows(headers, rows, guess as Mapping);
         if (normalized.length === 0) {
-          setStatus("err", "Mapping applied, but no valid rows were produced (check required fields).");
+          setStatus("err", "Auto-mapping produced no valid rows (check dimensions/qty).");
           return;
         }
         clearPreview();
         setStatus("ok", `Mapped to ${normalized.length.toLocaleString()} part(s).`);
         buildNormalizedPreview(normalized);
         lastParts = normalized;
-
-        // Try to pack right away (will show "No boards" if materials not loaded yet)
         void repackAndRender();
-      },
-      savedDefaults ?? undefined,
-      rows // (for future live preview UI)
-    );
+      } else {
+        // If we suppressed the drawer but mapping is incomplete, tell user
+        setStatus("err", `Header mapping incomplete. Missing: ${missing.join(", ")}`);
+      }
+    }
   } catch (err: any) {
     console.error(err);
     setStatus("err", `Failed to read CSV: ${err?.message ?? err}`);
@@ -354,29 +363,25 @@ async function repackAndRender() {
   }
 
   const s = getSettings();
-  let pack: PackResult;
 
-  try {
-    pack = packPartsToSheets(boards, lastParts, {
-      kerf: s.kerf,
-      margin: s.margin,
-      heuristic: "BSSF",
-      fallbackThreshold: 0.65,
-    });
-  } catch (e) {
-    console.error("Packing failed:", e);
-    setStatus("err","Packing failed — see console for details.");
-    return;
+  // small diagnostics to confirm values look sane
+  console.debug("[main] parts sample:", lastParts.slice(0, 3).map(p => ({
+    w: p.w, h: p.h, tag: p.materialTag, qty: p.qty
+  })));
+
+  // 2-pass pack:
+  // 1) try with tags; 2) if 0 sheets, retry ignoring tags to guarantee output
+  let pack = tryPack(lastParts, false);
+  let flatSheets = flattenPack(pack);
+
+  if (flatSheets.length === 0) {
+    setStatus("neutral", "No placements with material matching; retrying without material tags…");
+    console.warn("[main] no sheets with tags; retrying without tags");
+    pack = tryPack(lastParts, true);
+    flatSheets = flattenPack(pack);
   }
 
   lastPack = pack;
-
-  let flatSheets: SheetLayout[] = [];
-  if (hasByMaterial(pack)) {
-    flatSheets = (Object.values(pack.byMaterial) as SheetLayout[][]).flat();
-  } else if (hasSheets(pack)) {
-    flatSheets = (pack as import("./nesting/types").PackResultFlat).sheets;
-  }
 
   console.debug("[main] flatSheets:", flatSheets.length);
   if (flatSheets.length) {
@@ -384,5 +389,30 @@ async function repackAndRender() {
     emit(Events.LAYOUTS_READY, { sheets: flatSheets });
   } else {
     setStatus("err", "No sheets produced. Check material tags and dimensions.");
+  }
+
+  function tryPack(parts: NestablePart[], ignoreTags: boolean): PackResult {
+    const partsForPack = ignoreTags ? parts.map(p => ({ ...p, materialTag: undefined })) : parts;
+    try {
+      return packPartsToSheets(boards, partsForPack, {
+        kerf: s.kerf,
+        margin: s.margin,
+        heuristic: "BSSF",
+        fallbackThreshold: 0.65,
+      });
+    } catch (e) {
+      console.error("Packing failed:", e);
+      setStatus("err","Packing failed — see console for details.");
+      throw e;
+    }
+  }
+
+  function flattenPack(p: PackResult): SheetLayout[] {
+    if (hasByMaterial(p)) {
+      return (Object.values(p.byMaterial) as SheetLayout[][]).flat();
+    } else if (hasSheets(p)) {
+      return (p as import("./nesting/types").PackResultFlat).sheets;
+    }
+    return [];
   }
 }
