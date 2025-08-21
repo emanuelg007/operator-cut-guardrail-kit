@@ -1,42 +1,59 @@
-// Vanilla UI: tiny settings panel; call initSettingsUI(container)
-// Won’t interfere with your right-docked header mapping drawer.
+// src/ui/settings.ts
 import { getSettings, setSettings } from "../state/settings";
 
-export function initSettingsUI(container: HTMLElement): void {
+export function initSettingsUI(host: HTMLElement) {
+  host.innerHTML = "";
   const s = getSettings();
-  container.innerHTML = `
-    <div style="display:flex; flex-direction:column; gap:.75rem;">
-      <label style="display:flex; justify-content:space-between; gap:.75rem;">
-        <span>Units</span>
-        <select id="units">
-          <option value="mm"${s.units==="mm"?" selected":""}>mm</option>
-          <option value="cm"${s.units==="cm"?" selected":""}>cm</option>
-          <option value="in"${s.units==="in"?" selected":""}>in</option>
+
+  const wrap = document.createElement("div");
+  wrap.innerHTML = `
+    <h3 style="margin:0 0 8px 0;">Settings</h3>
+    <div style="display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;align-items:end">
+      <label>Units
+        <select id="st-units">
+          <option value="mm">mm</option>
+          <option value="in">in</option>
         </select>
       </label>
-      <label style="display:flex; justify-content:space-between; gap:.75rem;">
-        <span>Kerf</span>
-        <input id="kerf" type="number" step="0.1" min="0" value="${s.kerf}" style="width:8rem;">
+      <label>Kerf (mm)
+        <input id="st-kerf" type="number" min="0" step="0.1" />
       </label>
-      <label style="display:flex; justify-content:space-between; gap:.75rem;">
-        <span>Margin</span>
-        <input id="margin" type="number" step="0.1" min="0" value="${s.margin}" style="width:8rem;">
+      <label>Margin (mm)
+        <input id="st-margin" type="number" min="0" step="0.1" />
+      </label>
+      <label>Show Labels
+        <input id="st-showlabels" type="checkbox" />
+      </label>
+      <label>Show Dims
+        <input id="st-showdims" type="checkbox" />
       </label>
     </div>
   `;
+  host.appendChild(wrap);
 
-  const unitsEl = container.querySelector<HTMLSelectElement>("#units")!;
-  const kerfEl = container.querySelector<HTMLInputElement>("#kerf")!;
-  const marginEl = container.querySelector<HTMLInputElement>("#margin")!;
+  const units = wrap.querySelector("#st-units") as HTMLSelectElement;
+  const kerf = wrap.querySelector("#st-kerf") as HTMLInputElement;
+  const margin = wrap.querySelector("#st-margin") as HTMLInputElement;
+  const showLabels = wrap.querySelector("#st-showlabels") as HTMLInputElement;
+  const showDims = wrap.querySelector("#st-showdims") as HTMLInputElement;
+
+  units.value = s.units;
+  kerf.value = String(s.kerf);
+  margin.value = String(s.margin);
+  showLabels.checked = s.showLabels;
+  showDims.checked = s.showDims;
 
   const push = () =>
     setSettings({
-      units: unitsEl.value as any,
-      kerf: Number(kerfEl.value || 0),
-      margin: Number(marginEl.value || 0),
+      units: units.value as any, // "mm" | "in"
+      kerf: Number(kerf.value),
+      margin: Number(margin.value),
+      showLabels: showLabels.checked,
+      showDims: showDims.checked,
     });
 
-  unitsEl.addEventListener("change", push);
-  kerfEl.addEventListener("input", push);
-  marginEl.addEventListener("input", push);
+  [units, kerf, margin, showLabels, showDims].forEach((el) => {
+    el.addEventListener("change", push);
+    el.addEventListener("input", push);
+  });
 }

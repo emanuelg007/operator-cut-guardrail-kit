@@ -1,67 +1,54 @@
+// src/materials/toBoards.ts
 import type { BoardSpec, Grain } from "../nesting/types";
 
-function normStr(v: any): string { return String(v ?? "").trim(); }
-function normLower(v: any): string { return normStr(v).toLowerCase(); }
+const num = (v: any): number => {
+  const n = Number(String(v ?? "").replace(/[, ]+/g, ""));
+  return Number.isFinite(n) ? n : 0;
+};
+const normStr = (s: any) => String(s ?? "").trim();
 
-function grainFrom(v: any): Grain {
-  const s = normLower(v);
-  if (s === "alongx" || s === "width" || s === "x" || s === "horizontal" || s === "lengthwise") return "alongX";
-  if (s === "alongy" || s === "length" || s === "y" || s === "vertical" || s === "crosswise") return "alongY";
+export function parseMaterialGrain(s: any): Grain {
+  const k = String(s ?? "").toLowerCase().trim();
+  if (k === "alongx" || k === "width") return "alongX";
+  if (k === "alongy" || k === "length") return "alongY";
   return "none";
 }
 
-function copiesFrom(v: any): number | "infinite" | undefined {
-  const s = normLower(v);
-  if (!s) return undefined;
-  if (s === "inf" || s === "infinite" || s === "∞") return "infinite";
-  const n = Number(v);
-  return Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : undefined;
-}
+/** Convert Master Materials CSV rows into BoardSpec[] */
+export function materialsRowsToBoards(rows: string[][], headers: string[]): BoardSpec[] {
+  const H = headers.map(h => h.toLowerCase().trim());
+  const idx = (key: string) => H.indexOf(key.toLowerCase());
+  const iName = idx("name");
+  const iLen = idx("boardlength");
+  const iWid = idx("boardwidth");
+  const iTag = idx("materialtag");
+  const iCopies = idx("copies");
+  const iGrain = idx("grain");
 
-/** Convert a generic CSV row object into a BoardSpec. */
-export function rowToBoard(row: Record<string, any>): BoardSpec | null {
-  const width =
-    Number(row.BoardWidth ?? row.Width ?? row.W ?? row.boardW ?? row.Board_W) || 0;
-  const height =
-    Number(row.BoardLength ?? row.Length ?? row.H ?? row.boardH ?? row.Board_H) || 0;
+  const boards: BoardSpec[] = [];
+  for (const row of rows) {
+    const get = (i: number) => (i >= 0 ? row[i] : "");
+    const name = normStr(get(iName));
+    const length = num(get(iLen));
+    const width = num(get(iWid));
+    const tagRaw = normStr(get(iTag));
+    const copiesRaw = normStr(get(iCopies));
+    const grainRaw = normStr(get(iGrain));
+    if (!length || !width) continue;
 
-  if (width <= 0 || height <= 0) return null;
+    const copies: number | "infinite" =
+      copiesRaw.toLowerCase() === "infinite" ? "infinite" :
+      (Number.isFinite(Number(copiesRaw)) ? Math.max(1, Number(copiesRaw)) : 1);
 
-  const thickness =
-    Number(row.Thickness ?? row.thickness ?? row.BoardThickness ?? row.T) || undefined;
-
-  const materialTag = normStr(row.MaterialTag ?? row.Material ?? row.Name ?? row.materialTag ?? row.material);
-  const grain = grainFrom(row.Grain ?? row.GrainDirection ?? row.grain ?? row.Direction);
-
-  const copies = copiesFrom(row.Copies ?? row.Sheets ?? row.copies);
-
-  const idBase = row.ID ?? row.Id ?? row.Name ?? materialTag;
-  const id = normStr((idBase ?? "") || "");
-  const nameBase = row.Name ?? materialTag ?? id;
-  const name = normStr((nameBase ?? "") || "Board");
-
-  return {
-    id: id || undefined,
-    name,
-    width,
-    height,
-    thickness,
-    materialTag: materialTag || undefined,
-    grain,
-    copies,
-    units: "mm",
-  };
-}
-
-/** Convert an array of generic CSV row objects into BoardSpecs. */
-export function rowsToBoards(rows: Array<Record<string, any>>): BoardSpec[] {
-  const out: BoardSpec[] = [];
-  for (const r of rows) {
-    const b = rowToBoard(r);
-    if (b) out.push(b);
+    boards.push({
+      id: name || tagRaw || `${width}x${length}`,
+      name: name || undefined,
+      width,
+      height: length,
+      copies,
+      materialTag: tagRaw || name || "",
+      grain: parseMaterialGrain(grainRaw),
+    });
   }
-  return out;
+  return boards;
 }
-
-/** Back-compat export name some modules import. */
-export { rowsToBoards as materialsRowsToBoards };

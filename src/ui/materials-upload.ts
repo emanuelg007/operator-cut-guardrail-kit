@@ -1,45 +1,50 @@
 // src/ui/materials-upload.ts
-import { ingestMaterialsCsvText } from "../materials/ingest";
-import { emit, Events } from "../events";
+import { parseCsv } from "../csv/parseCsv";
+import { ingestMaterials } from "../materials/ingest";
 
-function setStatus(el: HTMLElement | null, type: "ok" | "err" | "neutral", msg: string) {
-  if (!el) return;
-  el.className = "status " + (type === "ok" ? "ok" : type === "err" ? "err" : "");
-  el.textContent = msg;
-}
+export function wireMaterialsUpload(
+  inputEl: HTMLInputElement, btnEl: HTMLButtonElement, statusEl: HTMLElement
+) {
+  let pending: File | null = null;
 
-export function wireMaterialsUploadUI() {
-  const input = document.getElementById("materialsFileInput") as HTMLInputElement | null;
-  const btn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
-  const status = document.getElementById("materialsStatus") as HTMLElement | null;
+  const setStatus = (kind: "ok" | "err" | "neutral", msg: string) => {
+    statusEl.className = "status " + (kind === "ok" ? "ok" : kind === "err" ? "err" : "");
+    statusEl.textContent = msg;
+  };
 
-  if (!input || !btn || !status) return;
+  inputEl.addEventListener("change", () => {
+    pending = inputEl.files && inputEl.files[0] ? inputEl.files[0] : null;
+    setStatus("neutral", pending ? `Selected: ${pending.name}` : "");
+    console.debug("[materials] file selected:", pending?.name);
+  });
 
-  // Clicking the button opens the file chooser
-  btn.addEventListener("click", () => input.click());
-
-  // When a file is selected, parse & load it
-  input.addEventListener("change", async () => {
-    const file = input.files?.[0] ?? null;
+  btnEl.addEventListener("click", async () => {
+    const file = pending ?? (inputEl.files?.[0] ?? null);
     if (!file) {
-      setStatus(status, "err", "No file selected.");
+      setStatus("err", "Choose a Master Materials CSV first.");
+      console.debug("[materials] no file chosen");
       return;
     }
-    setStatus(status, "neutral", `Selected: ${file.name}`);
-
     try {
+      setStatus("neutral", "Parsing materials CSV…");
       const text = await file.text();
-      const res = ingestMaterialsCsvText(text);
-      setStatus(status, "ok", `Loaded ${res.count} board(s) from ${file.name} (delimiter "${res.delimiter}")`);
-      emit(Events.MATERIALS_LOADED, { count: res.count });
+      const { headers, rows, delimiter } = parseCsv(text);
+      console.debug("[materials] parsed CSV", { headers, rows: rows.length, delimiter });
+
+      if (!headers.length) {
+        setStatus("err", "Could not detect header row.");
+        return;
+      }
+
+      const count = ingestMaterials(headers, rows);
+      if (count > 0) {
+        setStatus("ok", `Loaded ${count} board row(s). Delimiter: "${delimiter}"`);
+      } else {
+        setStatus("err", "No valid boards found in CSV (need BoardLength & BoardWidth).");
+      }
     } catch (e: any) {
-      setStatus(status, "err", `Failed to load: ${e?.message ?? e}`);
-    } finally {
-      // reset input so re-selecting same file will still fire change
-      input.value = "";
+      console.error("[materials] failed:", e);
+      setStatus("err", `Failed: ${e?.message || e}`);
     }
   });
 }
-
-// Auto-wire on module import
-try { wireMaterialsUploadUI(); } catch {}
