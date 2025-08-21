@@ -1,53 +1,64 @@
 // src/materials/toBoards.ts
 import type { BoardSpec, Grain } from "../nesting/types";
 
-const num = (v: any): number => {
-  const n = Number(String(v ?? "").replace(/[, ]+/g, ""));
-  return Number.isFinite(n) ? n : 0;
-};
-const normStr = (s: any) => String(s ?? "").trim();
+const slug = (s: string) => String(s ?? "").toLowerCase().trim();
 
-export function parseMaterialGrain(s: any): Grain {
-  const k = String(s ?? "").toLowerCase().trim();
-  if (k === "alongx" || k === "width") return "alongX";
-  if (k === "alongy" || k === "length") return "alongY";
+const toNumber = (raw: string): number => {
+  let s = String(raw ?? "").trim();
+  if (!s) return NaN;
+  s = s.replace(/[^\d.,\-]/g, "").replace(/\s+/g, "");
+  if (s.includes(",") && s.includes(".")) s = s.replace(/,/g, "");
+  else if (s.includes(",") && !s.includes(".")) s = s.replace(",", ".");
+  const v = Number(s);
+  return Number.isFinite(v) ? v : NaN;
+};
+
+function toGrain(s: string | undefined): Grain {
+  const n = slug(s || "");
+  if (n === "alongx" || n === "width") return "alongX";
+  if (n === "alongy" || n === "length") return "alongY";
   return "none";
 }
 
-/** Convert Master Materials CSV rows into BoardSpec[] */
-export function materialsRowsToBoards(rows: string[][], headers: string[]): BoardSpec[] {
-  const H = headers.map(h => h.toLowerCase().trim());
-  const idx = (key: string) => H.indexOf(key.toLowerCase());
-  const iName = idx("name");
-  const iLen = idx("boardlength");
-  const iWid = idx("boardwidth");
-  const iTag = idx("materialtag");
-  const iCopies = idx("copies");
-  const iGrain = idx("grain");
+export function materialsRowsToBoards(headers: string[], rows: string[][]): BoardSpec[] {
+  const get = (row: string[], key: string) => {
+    const idx = headers.indexOf(key);
+    return idx >= 0 ? row[idx] ?? "" : "";
+  };
 
   const boards: BoardSpec[] = [];
   for (const row of rows) {
-    const get = (i: number) => (i >= 0 ? row[i] : "");
-    const name = normStr(get(iName));
-    const length = num(get(iLen));
-    const width = num(get(iWid));
-    const tagRaw = normStr(get(iTag));
-    const copiesRaw = normStr(get(iCopies));
-    const grainRaw = normStr(get(iGrain));
-    if (!length || !width) continue;
+    const materialTag  = slug(get(row, "MaterialTag") || get(row, "Material Tag"));
+    const name         = String(get(row, "Name") || materialTag || "Board").trim();
+    const boardLength  = toNumber(get(row, "BoardLength"));
+    const boardWidth   = toNumber(get(row, "BoardWidth"));
+    const thickness    = toNumber(get(row, "Thickness"));
+    const copiesRaw    = get(row, "Copies");
+    const kerf         = toNumber(get(row, "Kerf"));
+    const margin       = toNumber(get(row, "Margin"));
+    const grain        = toGrain(get(row, "Grain"));
 
-    const copies: number | "infinite" =
-      copiesRaw.toLowerCase() === "infinite" ? "infinite" :
-      (Number.isFinite(Number(copiesRaw)) ? Math.max(1, Number(copiesRaw)) : 1);
+    const width  = Math.max(0, boardWidth);
+    const height = Math.max(0, boardLength);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) continue;
+
+    let copies: number | "infinite" | undefined = undefined;
+    if (String(copiesRaw).toLowerCase().trim() === "infinite") copies = "infinite";
+    else {
+      const c = toNumber(copiesRaw);
+      if (Number.isFinite(c)) copies = Math.max(0, Math.floor(c));
+    }
 
     boards.push({
-      id: name || tagRaw || `${width}x${length}`,
-      name: name || undefined,
+      id: name,
       width,
-      height: length,
+      height,
+      thickness: Number.isFinite(thickness) ? thickness : undefined,
       copies,
-      materialTag: tagRaw || name || "",
-      grain: parseMaterialGrain(grainRaw),
+      kerf: Number.isFinite(kerf) ? kerf : undefined,
+      margin: Number.isFinite(margin) ? margin : undefined,
+      grain,
+      materialTag: materialTag || undefined,
     });
   }
   return boards;

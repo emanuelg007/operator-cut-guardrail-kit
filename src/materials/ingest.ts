@@ -3,9 +3,9 @@ import { materialsRowsToBoards } from "./toBoards";
 import { setBoards } from "../state/materials";
 import { emit, Events } from "../events";
 
-export function ingestMaterials(headers: string[], rows: string[][]) {
-  const boards = materialsRowsToBoards(rows, headers);
+/** Ingest already-parsed CSV (headers + rows) into board state. */
+export function ingestMasterMaterials(headers: string[], rows: string[][]) {
+  const boards = materialsRowsToBoards(headers, rows); // <-- headers first
   setBoards(boards);
   emit(Events.MATERIALS_LOADED, { count: boards.length });
-  return boards.length;
 }

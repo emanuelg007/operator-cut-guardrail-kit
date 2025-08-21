@@ -3,26 +3,31 @@
 export type Grain = "none" | "alongX" | "alongY";
 
 export interface BoardSpec {
-  id?: string;
-  name?: string;
+  id: string;
   width: number;
   height: number;
+  thickness?: number;
   copies?: number | "infinite";
-  materialTag: string;
+  kerf?: number;
+  margin?: number;
   grain?: Grain;
+  materialTag?: string;           // <-- keep this optional
 }
 
 export interface NestablePart {
   id?: string;
   name?: string;
+  material?: string;
+  materialTag?: string;
   w: number;
   h: number;
   qty?: number;
-  canRotate?: boolean;
-  material?: string;
-  materialTag?: string;
-  grain?: Grain;
+  canRotate?: boolean; // undefined means "follow material"
+  // ⬇️ Add this line so we can preserve your full CSV:
+  extra?: Record<string, unknown>;
 }
+
+
 
 export interface PlacedPart {
   id?: string;

@@ -1,67 +1,118 @@
 // src/csv/normalize.ts
 import type { NestablePart } from "../nesting/types";
+import { parseNumberLike } from "../utils/num";
 
-const num = (v:any)=> {
-  const n = Number(String(v ?? "").replace(/[, ]+/g,""));
-  return Number.isFinite(n) ? n : 0;
+export type Mapping = {
+  // minimally required for nesting:
+  Name: string;
+  Material: string;
+  Length: string;
+  Width: string;
+  Qty: string;
+  // optional but respected when present:
+  MaterialTag?: string;
+  CanRotateRaw?: string; // your "Can Rotate (0 = No / 1 = Yes / 2 = Same As Material)"
+  LongExpansion?: string;  // "Long Expansion"
+  ShortExpansion?: string; // "Short Expansion"
 };
-const norm = (s:any)=> String(s ?? "").trim();
 
-export interface Mapping {
-  Name: string; Material: string; Length: string; Width: string; Qty: string;
-  Note1?: string; Note2?: string;
+/** Auto-map using your exact headers (semicolon list you pasted) */
+export function autoMap(headers: string[]): Mapping {
+  const idx = (want: string) => {
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+    const H = headers.map(norm);
+    const find = (...cands: string[]) => {
+      for (const c of cands) {
+        const i = H.indexOf(norm(c));
+        if (i !== -1) return headers[i];
+      }
+      return "";
+    };
+    return find(want);
+  };
+
+  return {
+    Name:         idx("Name") || headers[1] || "",
+    Material:     idx("Material"),
+    Length:       idx("Length"),
+    Width:        idx("Width"),
+    Qty:          idx("Quantity") || idx("Qty"),
+    MaterialTag:  idx("Material Tag") || idx("MaterialTag"),
+    CanRotateRaw: idx("Can Rotate (0 = No / 1 = Yes / 2 = Same As Material)") || idx("CanRotate"),
+    LongExpansion:  idx("Long Expansion"),
+    ShortExpansion: idx("Short Expansion"),
+  };
 }
 
-export function autoMap(headers: string[]): Mapping | null {
-  const H = headers.map(h => h.toLowerCase().trim());
-  const find = (needle: string, alts: string[] = []) => {
-    const want = [needle, ...alts].map(s => s.toLowerCase());
-    for (const w of want) {
-      const idx = H.indexOf(w);
-      if (idx >= 0) return headers[idx];
-    }
-    return "";
-  };
-  const m: Mapping = {
-    Name: find("name"),
-    Material: find("material", ["mat","materialtag","board material"]),
-    Length: find("length", ["len","boardlength","l"]),
-    Width: find("width", ["wid","boardwidth","w"]),
-    Qty: find("qty", ["quantity","copies","count"]),
-    Note1: find("note1"),
-    Note2: find("note2"),
-  };
-  if (!m.Name || !m.Material || !m.Length || !m.Width || !m.Qty) return null;
-  return m;
-}
-
-export function normalizeRows(headers: string[], rows: string[][], mapping: Mapping): NestablePart[] {
+/**
+ * Turn CSV rows into NestablePart[] while preserving ALL columns:
+ * - Uses Mapping to find key columns (no guessing of units; everything in mm)
+ * - Applies Long/Short Expansion to Length/Width if present
+ * - Parses rotation rule (0/1/2)
+ * - Packs the rest of the columns under `extra` for Details/Reporting
+ */
+export function normalizeRows(
+  headers: string[],
+  rows: string[][],
+  mapping: Mapping
+): NestablePart[] {
   const H = headers;
-  const idx = (h: string) => H.indexOf(h);
-  const get = (row: string[], col: string) => {
-    const i = idx(col);
-    return i >= 0 ? row[i] : "";
-  };
+  const get = (row: string[], key?: string) =>
+    key ? (row[H.indexOf(key)] ?? "") : "";
 
-  const out: NestablePart[] = [];
-  for (const r of rows) {
-    const name = norm(get(r, mapping.Name));
-    const mat  = norm(get(r, mapping.Material)).toLowerCase();
-    const len  = num(get(r, mapping.Length));
-    const wid  = num(get(r, mapping.Width));
-    const qty  = Math.max(0, Math.trunc(num(get(r, mapping.Qty))));
-    if (!name || !mat || !len || !wid || qty <= 0) continue;
+  const parts: NestablePart[] = [];
 
-    // Treat Length as Y (h), Width as X (w)
-    out.push({
-      id: name, name,
-      w: wid, h: len,
+  for (const row of rows) {
+    // Base fields (in mm)
+    const name = (get(row, mapping.Name) || "").toString().trim();
+    const material = (get(row, mapping.Material) || "").toString().trim();
+    const materialTag = (mapping.MaterialTag ? get(row, mapping.MaterialTag) : "").toString().trim() || undefined;
+
+    const Lraw = get(row, mapping.Length);
+    const Wraw = get(row, mapping.Width);
+    const qtyRaw = get(row, mapping.Qty);
+
+    let L = parseNumberLike(Lraw);
+    let W = parseNumberLike(Wraw);
+    const qty = Math.max(1, parseNumberLike(qtyRaw) || 1);
+
+    // Expansions (mm)
+    const longExp  = parseNumberLike(mapping.LongExpansion  ? get(row, mapping.LongExpansion)  : "");
+    const shortExp = parseNumberLike(mapping.ShortExpansion ? get(row, mapping.ShortExpansion) : "");
+    if (longExp)  L += longExp;
+    if (shortExp) W += shortExp;
+
+    // Rotation
+    const rotRaw = (mapping.CanRotateRaw ? get(row, mapping.CanRotateRaw) : "").trim();
+    let canRotate: boolean | undefined = undefined;
+    if (rotRaw !== "") {
+      const v = parseNumberLike(rotRaw);
+      if (v === 0) canRotate = false;
+      else if (v === 1) canRotate = true;
+      else if (v === 2) canRotate = undefined; // "same as material" → defer to material/grain rules
+    }
+
+    if (!(L > 0 && W > 0)) continue; // skip invalid rows
+
+    // Preserve ALL columns in extra
+    const extra: Record<string, unknown> = {};
+    for (let i = 0; i < headers.length; i++) {
+      const key = headers[i];
+      extra[key] = row[i] ?? "";
+    }
+
+    parts.push({
+      id: `${name || material || "item"}#${parts.length + 1}`,
+      name,
+      material,
+      materialTag,
+      w: W,
+      h: L,
       qty,
-      canRotate: true,
-      material: mat,
-      materialTag: mat,
-      grain: "none",
+      canRotate,
+      extra,
     });
   }
-  return out;
+
+  return parts;
 }
