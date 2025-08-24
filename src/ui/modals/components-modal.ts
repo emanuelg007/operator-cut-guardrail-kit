@@ -2,353 +2,84 @@
 import type { NestablePart } from "../../nesting/types";
 
 /**
- * Full-screen Components Handler modal.
- * - Shows ALL rows (no 15-row limit)
- * - Inline editing for ALL columns (union of keys across items)
- * - Add Component submodal with all fields
- * - Apply → send updated parts to caller (does NOT pack)
- * - Optimize → send updated parts, then dispatch window 'oc:optimizeRequested', and close
+ * Open the Components modal.
+ * - parts: reference array (we clone internally; Cancel discards, Optimize commits)
+ * - headers: full header list from the CSV (used in Details/Create to show every field)
+ * - onOptimize: called when Optimize → is pressed, with the latest parts array
  */
-
-type OnApply = (updated: NestablePart[]) => void;
-
-type Options = {
-  title?: string;
-};
-
-const Z = 2147483646;
-
 export function openComponentsModal(
   parts: NestablePart[],
-  _opts: Partial<Options> | undefined,
-  onApply: OnApply
+  headers: string[] = [],
+  onOptimize?: (updated: NestablePart[]) => void
 ): void {
-  // Remove any stale instance
+  // Remove any existing
   document.querySelectorAll("#oc-components-overlay").forEach((n) => n.remove());
-  const opts: Options = { title: "Components", ...( _opts || {} ) };
 
-  // Work on a deep-ish clone so we don’t mutate original until Apply
-  const data: NestablePart[] = parts.map(p => ({ ...(p as any) }));
+  // Work on a shallow copy so Close/Cancel can discard; Optimize → commits back
+  const working: NestablePart[] = parts.map(p => ({ ...(p as any) }));
 
-  // Collect ALL headers (union of keys across items). Known-first order, then the rest.
-  const knownFirst = ["name","materialTag","material","h","w","qty","id","notes1","notes2","edging"];
-  const allKeys = Array.from(
-    data.reduce<Set<string>>((acc, row) => {
-      Object.keys(row || {}).forEach(k => acc.add(k));
-      return acc;
-    }, new Set<string>(knownFirst))
-  );
+  const overlay = div({
+    id: "oc-components-overlay",
+    style: `
+      position: fixed; inset: 0; z-index: 2147483200;
+      background: rgba(15,23,42,0.35);
+      display: grid; place-items: center;
+    `,
+  });
 
-  // DOM
-  const overlay = document.createElement("div");
-  overlay.id = "oc-components-overlay";
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.background = "rgba(0,0,0,0.45)";
-  overlay.style.zIndex = String(Z);
-  overlay.style.display = "flex";
-  overlay.style.alignItems = "center";
-  overlay.style.justifyContent = "center";
+  const modal = div({
+    style: `
+      width: min(1200px, 96vw);
+      height: min(92vh, 920px);
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 40px 100px rgba(0,0,0,0.45);
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 10px;
+      padding: 12px;
+      overflow: hidden;
+      font: 13px/1.4 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+      color:#0f172a;
+    `,
+  });
 
-  const panel = document.createElement("div");
-  panel.style.width = "min(1200px, 96vw)";
-  panel.style.height = "min(92vh, 900px)";
-  panel.style.background = "#fff";
-  panel.style.borderRadius = "12px";
-  panel.style.boxShadow = "0 24px 60px rgba(0,0,0,0.35)";
-  panel.style.display = "grid";
-  panel.style.gridTemplateRows = "auto 1fr auto";
-  panel.style.overflow = "hidden";
+  // Header
+  const header = div({
+    style: "display:flex;align-items:center;justify-content:space-between;gap:8px;",
+  });
+  const title = h3(`Components (${working.length.toLocaleString()})`);
+  const headerBtns = div({ style: "display:flex;gap:8px;" });
 
-  const header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.alignItems = "center";
-  header.style.justifyContent = "space-between";
-  header.style.gap = "8px";
-  header.style.padding = "8px 10px";
-  header.style.borderBottom = "1px solid #e5e7eb";
-  const title = document.createElement("h3");
-  title.textContent = `${opts.title ?? "Components"} — ${data.length.toLocaleString()} item(s)`;
-  title.style.margin = "0";
-  title.style.fontSize = "14px";
+  const addBtn = pill("Add Component", () => {
+    const fresh = emptyPartFromHeaders(headers);
+    working.push(fresh);
+    rebuildBody();
+    title.textContent = `Components (${working.length.toLocaleString()})`;
+    // Immediately open details so all fields are available
+    openDetailsEditor(fresh, headers, () => refreshTitle(working, title), rebuildBody);
+  });
 
-  const btnRow = document.createElement("div");
-  btnRow.style.display = "flex";
-  btnRow.style.gap = "8px";
+  const closeBtn = pill("Close", () => overlay.remove());
+  headerBtns.append(addBtn, closeBtn);
+  header.append(title, headerBtns);
 
-  const btn = (label: string, solid = false) => {
-    const b = document.createElement("button");
-    b.textContent = label;
-    b.type = "button";
-    b.style.padding = "6px 10px";
-    b.style.border = "1px solid #d1d5db";
-    b.style.borderRadius = "8px";
-    b.style.cursor = "pointer";
-    b.style.background = solid ? "#111827" : "#fff";
-    b.style.color = solid ? "#fff" : "#111827";
-    return b;
-  };
+  // Body (scroll region)
+  const body = div({ style: "overflow:auto;padding:4px;" });
 
-  const addBtn = btn("Add Component");
-  const applyBtn = btn("Apply", true);
-  const optimizeBtn = btn("Optimize", true);
-  const closeBtn = btn("Close");
-
-  btnRow.append(addBtn, applyBtn, optimizeBtn, closeBtn);
-  header.append(title, btnRow);
-
-  const body = document.createElement("div");
-  body.style.overflow = "auto";
-
-  const footer = document.createElement("div");
-  footer.style.display = "flex";
-  footer.style.justifyContent = "space-between";
-  footer.style.gap = "8px";
-  footer.style.padding = "6px 10px";
-  footer.style.borderTop = "1px solid #e5e7eb";
-  footer.style.fontSize = "12px";
-  const hint = document.createElement("div");
-  hint.textContent = "Tip: edit cells directly. Numeric fields are auto-parsed.";
-  const status = document.createElement("div");
-  status.textContent = "";
-  footer.append(hint, status);
-
-  panel.append(header, body, footer);
-  overlay.appendChild(panel);
-  document.body.appendChild(overlay);
-
-  // Prevent background scroll while open
-  const prevOverflow = document.body.style.overflow;
-  document.body.style.overflow = "hidden";
-
-  const teardown = () => {
-    document.body.style.overflow = prevOverflow;
+  // Footer
+  const footer = div({ style: "display:flex;justify-content:flex-end;gap:8px;" });
+  const cancel = pill("Cancel", () => overlay.remove());
+  const optimize = primary("Optimize →", () => {
+    // Push working edits back to original array
+    parts.splice(0, parts.length, ...working);
     overlay.remove();
-  };
-
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) teardown();
+    onOptimize?.(parts);
   });
-  window.addEventListener("keydown", function onEsc(e) {
-    if (e.key === "Escape") { teardown(); window.removeEventListener("keydown", onEsc); }
-  });
-  closeBtn.addEventListener("click", () => teardown());
+  footer.append(cancel, optimize);
 
-  /* ------------------------------- TABLE --------------------------------- */
-
-  const table = document.createElement("table");
-  table.style.width = "100%";
-  table.style.borderCollapse = "collapse";
-  table.style.fontSize = "12px"; // compact
-  const thead = document.createElement("thead");
-  const trh = document.createElement("tr");
-  for (const k of allKeys) {
-    const th = document.createElement("th");
-    th.textContent = k;
-    th.style.position = "sticky";
-    th.style.top = "0";
-    th.style.background = "#f8fafc";
-    th.style.borderBottom = "1px solid #e5e7eb";
-    th.style.textAlign = "left";
-    th.style.padding = "6px";
-    trh.appendChild(th);
-  }
-  // actions col
-  const thA = document.createElement("th");
-  thA.textContent = "";
-  thA.style.position = "sticky";
-  thA.style.top = "0";
-  thA.style.background = "#f8fafc";
-  thA.style.borderBottom = "1px solid #e5e7eb";
-  thA.style.width = "1%";
-  trh.appendChild(thA);
-
-  thead.appendChild(trh);
-  const tbody = document.createElement("tbody");
-  table.append(thead, tbody);
-  body.appendChild(table);
-
-  const renderRow = (row: any, idx: number) => {
-    const tr = document.createElement("tr");
-    tr.style.borderBottom = "1px solid #f1f5f9";
-    for (const key of allKeys) {
-      const td = document.createElement("td");
-      td.style.padding = "4px 6px"; // compact
-      td.style.verticalAlign = "middle";
-
-      const val = row?.[key];
-      const input = document.createElement("input");
-      input.type = isNumericKey(key) ? "number" : "text";
-      if (isNumericKey(key)) {
-        input.step = key === "qty" ? "1" : "0.01";
-      }
-      input.value = val == null ? "" : String(val);
-      input.style.width = "100%";
-      input.style.boxSizing = "border-box";
-      input.style.padding = "4px 6px";
-      input.style.border = "1px solid #e5e7eb";
-      input.style.borderRadius = "6px";
-      input.addEventListener("change", () => {
-        const newVal = input.value;
-        row[key] = isNumericKey(key)
-          ? parseNumeric(newVal, key === "qty" ? 0 : 0)
-          : (newVal ?? "");
-        status.textContent = `Edited row ${idx + 1}, "${key}"`;
-      });
-
-      td.appendChild(input);
-      tr.appendChild(td);
-    }
-
-    const tdAct = document.createElement("td");
-    tdAct.style.padding = "4px 6px";
-    tdAct.style.whiteSpace = "nowrap";
-    const del = btn("Delete");
-    del.addEventListener("click", () => {
-      data.splice(idx, 1);
-      title.textContent = `${opts.title ?? "Components"} — ${data.length.toLocaleString()} item(s)`;
-      rebuildBody();
-      status.textContent = `Deleted row ${idx + 1}`;
-    });
-    tdAct.appendChild(del);
-    tr.appendChild(tdAct);
-
-    return tr;
-  };
-
-  const rebuildBody = () => {
-    tbody.innerHTML = "";
-    for (let i = 0; i < data.length; i++) {
-      tbody.appendChild(renderRow(data[i], i));
-    }
-  };
-
-  rebuildBody();
-
-  /* ----------------------------- ADD COMPONENT ---------------------------- */
-
-  addBtn.addEventListener("click", () => {
-    openAddModal(allKeys, (row) => {
-      data.push(row as NestablePart);
-      title.textContent = `${opts.title ?? "Components"} — ${data.length.toLocaleString()} item(s)`;
-      rebuildBody();
-      status.textContent = "Component added.";
-    });
-  });
-
-  /* ------------------------------- APPLY / OPTIMIZE ----------------------- */
-
-  applyBtn.addEventListener("click", () => {
-    onApply(clone(data));
-    status.textContent = "Changes applied.";
-  });
-
-  optimizeBtn.addEventListener("click", () => {
-    onApply(clone(data)); // persist current edits to the app
-    // Ask the app to run packing → SVG; the app listens to this.
-    window.dispatchEvent(new CustomEvent("oc:optimizeRequested"));
-    teardown();
-  });
-}
-
-/* -------------------------------- helpers --------------------------------- */
-
-function isNumericKey(k: string): boolean {
-  return k === "h" || k === "w" || k === "qty";
-}
-function parseNumeric(v: string, d = 0): number {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : d;
-}
-function clone<T>(x: T): T {
-  return JSON.parse(JSON.stringify(x));
-}
-
-/* --------------------------- Add Component modal -------------------------- */
-
-function openAddModal(allKeys: string[], onCreate: (row: Record<string, unknown>) => void) {
-  const overlay = document.createElement("div");
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.background = "rgba(0,0,0,0.45)";
-  overlay.style.zIndex = String(2147483647);
-  overlay.style.display = "flex";
-  overlay.style.alignItems = "center";
-  overlay.style.justifyContent = "center";
-
-  const card = document.createElement("div");
-  card.style.width = "min(720px, 96vw)";
-  card.style.maxHeight = "85vh";
-  card.style.overflow = "auto";
-  card.style.background = "#fff";
-  card.style.borderRadius = "10px";
-  card.style.boxShadow = "0 20px 50px rgba(0,0,0,0.35)";
-  card.style.padding = "12px";
-
-  const title = document.createElement("h3");
-  title.textContent = "Add Component (all fields optional)";
-  title.style.margin = "0 0 8px 0";
-
-  const form = document.createElement("div");
-  form.style.display = "grid";
-  form.style.gridTemplateColumns = "1fr 1fr";
-  form.style.gap = "8px";
-
-  const inputs = new Map<string, HTMLInputElement>();
-
-  for (const k of allKeys) {
-    const wrap = document.createElement("label");
-    wrap.style.display = "grid";
-    wrap.style.gap = "4px";
-    wrap.style.fontSize = "12px";
-
-    const span = document.createElement("span");
-    span.textContent = k;
-
-    const input = document.createElement("input");
-    input.type = isNumericKey(k) ? "number" : "text";
-    input.style.padding = "6px 8px";
-    input.style.border = "1px solid #d1d5db";
-    input.style.borderRadius = "8px";
-
-    inputs.set(k, input);
-    wrap.append(span, input);
-    form.appendChild(wrap);
-  }
-
-  const bar = document.createElement("div");
-  bar.style.display = "flex";
-  bar.style.justifyContent = "flex-end";
-  bar.style.gap = "8px";
-  bar.style.marginTop = "10px";
-
-  const cancel = document.createElement("button");
-  cancel.textContent = "Cancel";
-  styleBtn(cancel);
-  cancel.onclick = () => overlay.remove();
-
-  const create = document.createElement("button");
-  create.textContent = "Create";
-  styleBtn(create, true);
-  create.onclick = () => {
-    const row: Record<string, unknown> = {};
-    for (const [k, inp] of inputs) {
-      const v = inp.value;
-      if (v === "") continue;
-      row[k] = isNumericKey(k) ? parseNumeric(v, k === "qty" ? 0 : 0) : v;
-    }
-    // Ensure minimal required fields if user filled them
-    if (row["h"] != null) row["h"] = Number(row["h"]);
-    if (row["w"] != null) row["w"] = Number(row["w"]);
-    if (row["qty"] != null) row["qty"] = Number(row["qty"]);
-    onCreate(row);
-    overlay.remove();
-  };
-
-  bar.append(cancel, create);
-  card.append(title, form, bar);
-  overlay.appendChild(card);
-
+  modal.append(header, body, footer);
+  overlay.appendChild(modal);
   overlay.addEventListener("click", (e) => {
     if (e.target === overlay) overlay.remove();
   });
@@ -357,13 +88,321 @@ function openAddModal(allKeys: string[], onCreate: (row: Record<string, unknown>
   });
 
   document.body.appendChild(overlay);
+  rebuildBody();
+
+  function rebuildBody() {
+    body.innerHTML = "";
+    body.append(buildEditableTable(working, headers, title, rebuildBody));
+  }
 }
 
-function styleBtn(b: HTMLButtonElement, solid = false) {
-  b.style.padding = "6px 10px";
-  b.style.borderRadius = "8px";
-  b.style.border = "1px solid #d1d5db";
-  b.style.cursor = "pointer";
-  b.style.background = solid ? "#111827" : "#fff";
-  b.style.color = solid ? "#fff" : "#111827";
+/* -------------------------------------------------------------------------- */
+/*                          Editable list (compact)                           */
+/* -------------------------------------------------------------------------- */
+
+function buildEditableTable(
+  parts: NestablePart[],
+  headers: string[],
+  titleEl: HTMLElement,
+  refresh: () => void
+): HTMLElement {
+  // First view columns: all details up to notes2 + edging, then Details btn
+  const table = document.createElement("table");
+  table.style.width = "100%";
+  table.style.borderCollapse = "separate";
+  table.style.borderSpacing = "0 6px";
+
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  const cols = ["Name", "Material", "Length", "Width", "Qty", "Notes1", "Notes2", "Edging", ""];
+  cols.forEach((label) => {
+    const th = document.createElement("th");
+    th.textContent = label;
+    th.style.textAlign = "left";
+    th.style.padding = "6px 8px";
+    th.style.fontSize = "12px";
+    th.style.color = "#334155";
+    trh.appendChild(th);
+  });
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+
+  parts.forEach((p) => {
+    const tr = document.createElement("tr");
+    tr.style.background = "#f8fafc";
+    tr.style.border = "1px solid #e5e7eb";
+
+    const td = (node: HTMLElement | string) => {
+      const cell = document.createElement("td");
+      if (typeof node === "string") cell.textContent = node;
+      else cell.appendChild(node);
+      cell.style.padding = "6px 8px";
+      cell.style.borderTop = "1px solid #e5e7eb";
+      cell.style.borderBottom = "1px solid #e5e7eb";
+      return cell;
+    };
+
+    const nameI = textInput(p.name ?? (p as any).id ?? "", (v) => { (p as any).name = v; });
+    const matI  = textInput(((p as any).materialTag ?? (p as any).material ?? ""), (v) => {
+      if ("materialTag" in p) (p as any).materialTag = v;
+      else (p as any).material = v;
+    });
+
+    const lenI  = numInput(p.h ?? 0, (v) => { (p as any).h = v; }, "1");
+    const widI  = numInput(p.w ?? 0, (v) => { (p as any).w = v; }, "1");
+    const qtyI  = numInput((p as any).qty ?? 1, (v) => { (p as any).qty = v; }, "1");
+
+    const n1I   = textInput((p as any).notes1 ?? "", (v) => { (p as any).notes1 = v; });
+    const n2I   = textInput((p as any).notes2 ?? "", (v) => { (p as any).notes2 = v; });
+    const edI   = textInput((p as any).edging ?? "", (v) => { (p as any).edging = v; });
+
+    const detailsBtn = smallBtn("Details", () =>
+      openDetailsEditor(p, headers, () => refreshTitle(parts, titleEl), refresh)
+    );
+
+    tr.append(
+      td(nameI), td(matI), td(lenI), td(widI), td(qtyI), td(n1I), td(n2I), td(edI), td(detailsBtn)
+    );
+    tbody.appendChild(tr);
+  });
+
+  table.appendChild(tbody);
+  return table;
 }
+
+/* ------------------------------ Details editor ---------------------------- */
+
+function openDetailsEditor(
+  part: NestablePart,
+  headers: string[],
+  onChangeCount: () => void,
+  onCloseRebuild: () => void
+) {
+  document.querySelectorAll("#oc-details-overlay").forEach((n) => n.remove());
+
+  // union of known keys + headers + current part keys
+  const baseKeys = new Set<string>([
+    "id","name","materialTag","material",
+    "h","w","qty",
+    "notes1","notes2",
+    // common edging fields you requested
+    "edging","edgeTop","edgeRight","edgeBottom","edgeLeft",
+  ]);
+  for (const h of headers) baseKeys.add(h);
+  for (const k of Object.keys(part as any)) baseKeys.add(k);
+
+  // Present name-ish keys earlier, size near top, the rest alphabetical
+  const pref = ["name","materialTag","material","h","w","qty","notes1","notes2","edging","edgeTop","edgeRight","edgeBottom","edgeLeft"];
+  const all  = Array.from(baseKeys);
+  const keys = [
+    ...pref.filter(k => all.includes(k)),
+    ...all.filter(k => !pref.includes(k)).sort((a,b)=>a.localeCompare(b))
+  ];
+
+  const overlay = div({
+    id: "oc-details-overlay",
+    style: `
+      position: fixed; inset: 0; z-index: 2147483300;
+      background: rgba(0,0,0,0.45);
+      display: grid; place-items: center;
+    `,
+  });
+
+  const card = div({
+    style: `
+      width: min(740px, 94vw);
+      max-height: 90vh;
+      overflow: auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 30px 80px rgba(0,0,0,0.5);
+      padding: 14px;
+      display: grid; gap: 10px;
+    `,
+  });
+
+  const head = div({ style: "display:flex;align-items:center;justify-content:space-between;gap:8px;" });
+  head.append(h3(`Edit — ${part.name ?? (part as any).id ?? ""}`), pill("Close", () => { overlay.remove(); onCloseRebuild(); }));
+
+  const form = div({
+    style: `
+      display:grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr));
+      gap:10px;
+    `,
+  });
+
+  // Build fields
+  const editors: Record<string, HTMLInputElement> = {};
+  for (const k of keys) {
+    const val = (part as any)[k];
+    const isNumber = typeof val === "number" || ["h","w","qty"].includes(k);
+    const field = formRow(k, isNumber ? numberField(val ?? 0) : textField(String(val ?? "")));
+    editors[k] = field.querySelector("input") as HTMLInputElement;
+    form.append(field);
+  }
+
+  const footer = div({ style: "display:flex;justify-content:flex-end;gap:8px;" });
+  const removeBtn = pill("Delete", () => {
+    // Signal delete by setting a flag; actual array changes happen in caller
+    (part as any).__deleted = true;
+    overlay.remove();
+    onCloseRebuild();
+    onChangeCount();
+  });
+  const saveBtn = primary("Save", () => {
+    for (const k of Object.keys(editors)) {
+      const input = editors[k];
+      const isNum = input.type === "number";
+      (part as any)[k] = isNum ? toNumberSafe(input.value) : input.value;
+    }
+    overlay.remove();
+    onCloseRebuild();
+  });
+
+  card.append(head, form, div({style:"height:2px;background:#f1f5f9;margin:2px 0;"}), footer);
+  footer.append(removeBtn, saveBtn);
+
+  overlay.appendChild(card);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) { overlay.remove(); onCloseRebuild(); } });
+  window.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") { overlay.remove(); onCloseRebuild(); window.removeEventListener("keydown", onEsc); }
+  });
+
+  document.body.appendChild(overlay);
+}
+
+/* ------------------------------ util helpers ------------------------------ */
+
+function emptyPartFromHeaders(headers: string[]): NestablePart {
+  const p: any = {
+    id: `new-${Date.now()}`,
+    name: "",
+    materialTag: "",
+    w: 0,
+    h: 0,
+    qty: 1,
+    notes1: "",
+    notes2: "",
+    edging: "",
+    edgeTop: "", edgeRight: "", edgeBottom: "", edgeLeft: "",
+  };
+  // initialize any unknown headers to empty strings so they're editable in Details
+  for (const h of headers) if (!(h in p)) p[h] = "";
+  return p as NestablePart;
+}
+
+function refreshTitle(parts: NestablePart[], el: HTMLElement) {
+  el.textContent = `Components (${parts.filter(p => !(p as any).__deleted).length.toLocaleString()})`;
+}
+
+/* DOM helpers */
+function div(opts: Partial<HTMLElement> & { style?: string; id?: string } = {}) {
+  const d = document.createElement("div");
+  if (opts.id) d.id = opts.id;
+  if (opts.style) (d as HTMLElement).style.cssText = opts.style;
+  return d;
+}
+function h3(text: string) { const h = document.createElement("h3"); h.textContent = text; h.style.margin = "0"; h.style.fontSize = "18px"; h.style.fontWeight = "800"; return h; }
+
+function pill(label: string, onClick: () => void) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.style.cssText = `
+    padding: 8px 12px; border:1px solid #cbd5e1; border-radius:999px; cursor:pointer;
+    background:#fff; color:#334155;
+  `;
+  b.onclick = onClick;
+  return b;
+}
+function primary(label: string, onClick: () => void) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.style.cssText = `
+    padding: 8px 14px; border:1px solid #60a5fa; border-radius:10px; cursor:pointer;
+    background: linear-gradient(180deg, #93c5fd, #3b82f6); color:#fff; font-weight:700;
+  `;
+  b.onclick = onClick;
+  return b;
+}
+function smallBtn(label: string, onClick: () => void) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.style.cssText = `
+    padding: 6px 10px; border:1px solid #cbd5e1; border-radius:8px; cursor:pointer;
+    background:#fff; color:#1f2937;
+  `;
+  b.onclick = onClick;
+  return b;
+}
+
+/* inline inputs */
+function baseInputCss() {
+  return `
+    font: 13px/1.4 system-ui,-apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    padding: 6px 8px; border:1px solid #cbd5e1; border-radius:8px;
+    background:#ffffff; color:#0f172a; outline:none; width:100%;
+  `;
+}
+function textInput(value: string, onChange: (v: string) => void) {
+  const i = document.createElement("input");
+  i.type = "text";
+  i.value = String(value ?? "");
+  i.style.cssText = baseInputCss();
+  i.addEventListener("change", () => onChange(i.value));
+  return i;
+}
+function numInput(value: number, onChange: (v: number) => void, step = "1") {
+  const i = document.createElement("input");
+  i.type = "number";
+  i.step = step;
+  i.value = String(value ?? 0);
+  i.style.cssText = baseInputCss();
+  i.addEventListener("change", () => onChange(toNumberSafe(i.value)));
+  return i;
+}
+
+/* details form inputs */
+function numberField(value: number) {
+  const w = document.createElement("div");
+  const i = numInput(value ?? 0, () => {}, "1");
+  w.appendChild(i);
+  return w;
+}
+function textField(value: string) {
+  const w = document.createElement("div");
+  const i = textInput(value ?? "", () => {});
+  w.appendChild(i);
+  return w;
+}
+function formRow(label: string, fieldWrap: HTMLElement) {
+  const wrap = div({
+    style: `
+      display:grid; gap:6px; border:1px solid #e5e7eb; border-radius:8px; padding:8px; background:#fff;
+      font-size:12px;
+    `,
+  });
+  const cap = document.createElement("div");
+  cap.textContent = prettify(label);
+  cap.style.opacity = "0.8";
+  wrap.append(cap, fieldWrap);
+  return wrap;
+}
+
+function prettify(key: string) {
+  return key
+    .replace(/([A-Z])/g, " $1")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^\w/, (m) => m.toUpperCase());
+}
+function toNumberSafe(s: string) {
+  const n = Number(s);
+  return Number.isFinite(n) ? n : 0;
+}
+

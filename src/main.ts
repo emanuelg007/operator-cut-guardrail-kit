@@ -1,7 +1,13 @@
-// src/main.ts
+/* src/main.ts — full replacement
+   Flow:
+   1) Upload Master Materials
+   2) Upload Cutting List → Components modal (all key headers visible/editable)
+   3) Optimize → pack → open full-screen SVG overlay with tabs (by material) + sheet buttons
+*/
+
 import { parseCsv } from "./csv/parseCsv";
 import { normalizeRows, type Mapping } from "./csv/normalize";
-import { autoMapHeaders, mappingMissing } from "./csv/autoMap";
+import { autoMapHeaders } from "./csv/autoMap";
 import { openHeaderMapModal as _maybeModal } from "./ui/modals/header-map-modal";
 
 import * as SettingsUI from "./ui/settings";
@@ -26,7 +32,7 @@ import { printLabelBrowser } from "./printing/labels";
 const fileInput = document.getElementById("fileInput") as HTMLInputElement | null;
 const uploadBtn = document.getElementById("uploadBtn") as HTMLButtonElement | null;
 const statusEl = document.getElementById("status") as HTMLDivElement | null;
-const previewEl = document.getElementById("preview") as HTMLDivElement | null; // we will NOT use it for components anymore
+const previewEl = document.getElementById("preview") as HTMLDivElement | null; // legacy area; we keep empty now
 const fileNameEl = document.getElementById("fileName") as HTMLSpanElement | null;
 
 // Master materials
@@ -34,11 +40,11 @@ const materialsFileInput = document.getElementById("materialsFileInput") as HTML
 const uploadMaterialsBtn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
 const materialsStatusEl = document.getElementById("materialsStatus") as HTMLSpanElement | null;
 
-// Render targets (legacy base mount – we’ll show SVG in a modal, not here)
-const svgContainer = document.getElementById("board-svg")!;
-const settingsContainer = document.getElementById("settings")!;
+// Legacy inline mount (we still render there for dev, but primary view is the overlay)
+const svgContainer = document.getElementById("board-svg") as HTMLElement | null;
+const settingsContainer = document.getElementById("settings") as HTMLElement | null;
 
-/* ------------------------- SETTINGS LAUNCHER (modal) ------------------------- */
+/* ------------------------- SETTINGS LAUNCHER (modal) ---------------------- */
 
 setupSettingsLauncher();
 function setupSettingsLauncher() {
@@ -69,10 +75,7 @@ function setupSettingsLauncher() {
     }
     const ui: any = SettingsUI;
     try {
-      if (typeof ui?.openSettingsModal === "function") {
-        ui.openSettingsModal();
-        return;
-      }
+      if (typeof ui?.openSettingsModal === "function") return void ui.openSettingsModal();
       if (typeof ui?.initSettingsUI === "function" && settingsContainer) {
         settingsContainer.style.display = "";
         ui.initSettingsUI(settingsContainer);
@@ -81,7 +84,7 @@ function setupSettingsLauncher() {
       alert("Settings UI is not available.");
     } catch (err) {
       console.error("[settings] open failed:", err);
-      alert("Could not open Settings (see console)");
+      alert("Could not open Settings (see console).");
     }
   };
 
@@ -89,13 +92,12 @@ function setupSettingsLauncher() {
   btn = document.getElementById("oc-open-settings") as HTMLButtonElement;
   btn.addEventListener("click", openSettings);
 
-  const onHotkey = (e: KeyboardEvent) => {
+  window.addEventListener("keydown", (e: KeyboardEvent) => {
     if (e.key.toLowerCase() !== "s") return;
     const el = document.activeElement as HTMLElement | null;
     const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
     if (!typing) { e.preventDefault(); openSettings(); }
-  };
-  window.addEventListener("keydown", onHotkey);
+  });
 }
 
 /* --------------------------------- STATE ---------------------------------- */
@@ -103,12 +105,7 @@ function setupSettingsLauncher() {
 let pendingFile: File | null = null;
 let lastParts: NestablePart[] = [];
 let lastPack: PackResult | null = null;
-let showSvgAfterPack = false; // when Optimize is pressed, we use this to open the SVG modal on LAYOUTS_READY
-
-/* ------------------------------- EVT HELPERS ------------------------------ */
-const EVT = (name: string) => ((Events as any)?.[name] ?? name);
-const emitLoose = (name: string, payload?: any) => (emit as any)(EVT(name), payload);
-const onLoose = (name: string, cb: (...args: any[]) => void) => (on as any)(EVT(name), cb);
+let showSvgAfterPack = false;
 
 /* -------------------------------- HELPERS --------------------------------- */
 
@@ -121,6 +118,7 @@ function showFileName(name: string) { if (fileNameEl) fileNameEl.textContent = n
 function clearPreview() { if (previewEl) previewEl.innerHTML = ""; }
 
 /* -------------------------- SVG PART ACTION MODAL ------------------------- */
+
 function openSvgPartActionModal(p: NestablePart, pid: string) {
   const overlay = document.createElement("div");
   overlay.style.position = "fixed";
@@ -129,11 +127,11 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
   overlay.style.display = "flex";
   overlay.style.alignItems = "center";
   overlay.style.justifyContent = "center";
-  overlay.style.zIndex = "10000";
+  overlay.style.zIndex = "2147483600";
 
   const card = document.createElement("div");
-  card.style.width = "min(640px, 92vw)";
-  card.style.maxHeight = "80vh";
+  card.style.width = "min(680px, 94vw)";
+  card.style.maxHeight = "82vh";
   card.style.overflow = "auto";
   card.style.background = "#fff";
   card.style.borderRadius = "12px";
@@ -141,7 +139,7 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
   card.style.padding = "16px";
 
   const title = document.createElement("h3");
-  title.textContent = `Component — ${p.name ?? p.id ?? ""}`;
+  title.textContent = `Component — ${p.name ?? (p as any).id ?? ""}`;
   title.style.marginTop = "0";
 
   const facts = document.createElement("div");
@@ -149,7 +147,8 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
   facts.style.gap = "10px";
   facts.style.flexWrap = "wrap";
   facts.style.marginBottom = "8px";
-  const fact = (k: string, v: string) => {
+
+  const chip = (k: string, v: string) => {
     const span = document.createElement("span");
     span.style.padding = "4px 8px";
     span.style.border = "1px solid #e5e7eb";
@@ -159,27 +158,32 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
     return span;
   };
   facts.append(
-    fact("Material", String((p as any).materialTag ?? (p as any).material ?? "")),
-    fact("Size", `${Math.round(p.w)} × ${Math.round(p.h)} mm`),
-    fact("Qty", String((p as any).qty ?? 1)),
+    chip("Material", String((p as any).materialTag ?? (p as any).material ?? "")),
+    chip("Size", `${Math.round(p.w)} × ${Math.round(p.h)} mm`),
+    chip("Qty", String((p as any).qty ?? 1)),
   );
 
+  // Full editable table of all fields
   const table = document.createElement("table");
   table.style.width = "100%";
   table.style.borderCollapse = "collapse";
   const tbody = document.createElement("tbody");
-  (Object.entries(p as unknown as Record<string, unknown>)).forEach(([k, v]) => {
+  (Object.keys(p) as (keyof typeof p)[]).forEach((k) => {
     const tr = document.createElement("tr");
     const ktd = document.createElement("td");
     const vtd = document.createElement("td");
-    ktd.textContent = k;
-    vtd.textContent = String(v ?? "");
+    ktd.textContent = String(k);
     ktd.style.fontWeight = "600";
     ktd.style.width = "30%";
-    for (const td of [ktd, vtd]) {
-      td.style.borderBottom = "1px solid #eee";
-      td.style.padding = "6px 8px";
-    }
+    const inp = document.createElement("input");
+    inp.type = (typeof (p as any)[k] === "number") ? "number" : "text";
+    inp.value = String((p as any)[k] ?? "");
+    inp.style.cssText = "width:100%;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;";
+    inp.addEventListener("change", () => {
+      (p as any)[k] = (inp.type === "number") ? Number(inp.value) : inp.value;
+    });
+    vtd.appendChild(inp);
+    for (const td of [ktd, vtd]) { td.style.borderBottom = "1px solid #eee"; td.style.padding = "6px 8px"; }
     tr.append(ktd, vtd);
     tbody.appendChild(tr);
   });
@@ -190,8 +194,7 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
   bar.style.justifyContent = "flex-end";
   bar.style.gap = "8px";
   bar.style.marginTop = "12px";
-
-  const btn = (label: string) => {
+  const btn = (label: string, fn: () => void) => {
     const b = document.createElement("button");
     b.textContent = label;
     b.style.padding = "6px 12px";
@@ -199,11 +202,11 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
     b.style.borderRadius = "8px";
     b.style.background = "#fff";
     b.style.cursor = "pointer";
+    b.onclick = fn;
     return b;
   };
 
-  const printBtn = btn("Print");
-  printBtn.onclick = () => {
+  const printBtn = btn("Print", () => {
     printLabelBrowser({
       id: (p as any).id,
       name: p.name,
@@ -215,32 +218,28 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
       notes2: (p as any).notes2,
     });
     markPrinted(pid);
-    emitLoose("PART_STATUS_CHANGED", { pid, printed: true });
-    document.body.removeChild(overlay);
-  };
-
-  const undoBtn = btn("Undo");
-  undoBtn.onclick = () => {
+    emit(Events.PART_STATUS_CHANGED, { pid, printed: true });
+    overlay.remove();
+  });
+  const undoBtn = btn("Undo", () => {
     undoPrinted(pid);
-    emitLoose("PART_STATUS_CHANGED", { pid, printed: false });
-    document.body.removeChild(overlay);
-  };
-
-  const closeBtn = btn("Close");
-  closeBtn.onclick = () => document.body.removeChild(overlay);
+    emit(Events.PART_STATUS_CHANGED, { pid, printed: false });
+    overlay.remove();
+  });
+  const closeBtn = btn("Close", () => overlay.remove());
 
   bar.append(printBtn, undoBtn, closeBtn);
   card.append(title, facts, table, bar);
   overlay.appendChild(card);
-  overlay.addEventListener("click", (e) => { if (e.target === overlay) document.body.removeChild(overlay); });
-  window.addEventListener("keydown", function onEsc(e) {
-    if (e.key === "Escape") { document.body.removeChild(overlay); window.removeEventListener("keydown", onEsc); }
-  });
 
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
+  window.addEventListener("keydown", function onEsc(e) {
+    if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); }
+  });
   document.body.appendChild(overlay);
 }
 
-/* --------------------- MAPPING (drawer or real modal) --------------------- */
+/* --------------------- MAPPING (modal or fallback drawer) ----------------- */
 
 type DrawerResolve = (m: Mapping) => void;
 
@@ -274,7 +273,7 @@ function buildFallbackMapDrawer(
   title.textContent = "Map CSV headers → Required fields";
   title.style.margin = "0 0 8px";
 
-  const fields: (keyof Mapping)[] = ["Name","Material","Length","Width","Qty"];
+  const fields: (keyof Mapping)[] = ["Name", "Material", "Length", "Width", "Qty"];
   const form = document.createElement("form");
   form.onsubmit = (e) => { e.preventDefault(); };
 
@@ -352,9 +351,8 @@ async function ensureMappingViaDrawer(
   rows: string[][],
   guess: Partial<Mapping>
 ): Promise<Mapping> {
-  // We prefer a modal (“handler”). If not available, we fall back to the drawer.
-  const useModal = true;
-  if (useModal && typeof (_maybeModal as any) === "function") {
+  // Prefer real modal if present
+  if (typeof (_maybeModal as any) === "function") {
     return new Promise<Mapping>((resolve) => {
       (_maybeModal as any)(headers, (m: Mapping) => resolve(m), guess, rows);
     });
@@ -377,48 +375,42 @@ on(Events.MATERIALS_LOADED, (payload) => {
     materialsStatusEl.className = "status ok";
     materialsStatusEl.textContent = `Loaded ${count} board row(s).`;
   }
-  console.debug("[main] materials loaded:", count);
   if (lastParts.length) void repackAndRender();
 });
 
-/* ----------------------------- SVG PAGER / MODAL -------------------------- */
+/* -------------------------- PACK + SVG LISTENERS -------------------------- */
 
-// Keep legacy listener so devs can still see inline SVG (useful during dev),
-// but if Optimize triggered, we’ll open the SVG full-screen modal as well.
 on(Events.LAYOUTS_READY, (payload) => {
   const { sheets = [] as SheetLayout[] } = payload ?? { sheets: [] as SheetLayout[] };
-  console.debug("[main] layouts ready:", sheets.length);
-  // render to hidden/legacy mount
+  // Inline (dev) render
   if (svgContainer) {
     svgContainer.innerHTML = "";
     createBoardPager(svgContainer, sheets);
   }
-  // if optimize flow requested, open the SVG modal
+  // Full-screen overlay if requested
   if (showSvgAfterPack) {
     showSvgAfterPack = false;
     openSvgModal(sheets);
   }
 });
 
-/* --------------------- SVG → modal (print / undo / close) ----------------- */
+/* --------------------- PART ACTIONS from boardSvg events ------------------ */
 
-onLoose("PART_CLICKED", ({ pid, part }: any) => {
+on(Events.PART_CLICKED, ({ pid, part }) => {
   if (!pid || !part) return;
-  openSvgPartActionModal(part, pid);
+  openSvgPartActionModal(part as unknown as NestablePart, pid);
 });
-
-onLoose("PART_PRINT_REQUEST", ({ pid }: any) => {
+on(Events.PART_PRINT_REQUEST, ({ pid }) => {
   if (!pid) return;
   markPrinted(pid);
-  emitLoose("PART_STATUS_CHANGED", { pid, printed: true });
+  emit(Events.PART_STATUS_CHANGED, { pid, printed: true });
 });
-onLoose("PART_UNDO_PRINT_REQUEST", ({ pid }: any) => {
+on(Events.PART_UNDO_PRINT_REQUEST, ({ pid }) => {
   if (!pid) return;
   undoPrinted(pid);
-  emitLoose("PART_STATUS_CHANGED", { pid, printed: false });
+  emit(Events.PART_STATUS_CHANGED, { pid, printed: false });
 });
-on(Events.PART_STATUS_CHANGED, (payload) => {
-  const { pid, printed } = (payload ?? {}) as { pid?: string; printed?: boolean };
+on(Events.PART_STATUS_CHANGED, ({ pid, printed }) => {
   if (!pid || printed === undefined) return;
   if (printed) markPrinted(pid); else undoPrinted(pid);
 });
@@ -436,9 +428,7 @@ uploadBtn?.addEventListener("click", () => {
 /* ----------------------------- MAIN PROCESSING ---------------------------- */
 
 async function handleCuttingList(file: File | null) {
-  // Do NOT populate the base page with the list anymore.
-  clearPreview();
-
+  clearPreview(); // keep base page empty — we show the Components modal instead
   if (!file) {
     setStatus("err", "No file uploaded");
     showFileName("No file chosen");
@@ -449,15 +439,13 @@ async function handleCuttingList(file: File | null) {
   try {
     const text = await file.text();
     const { headers, rows, delimiter } = parseCsv(text);
-
     if (!headers || headers.length === 0) {
       setStatus("err", "Could not detect a header row. Check the first line of your CSV.");
       return;
     }
-
     setStatus("ok", `Loaded ${rows.length.toLocaleString()} row(s). Delimiter detected: "${delimiter}"`);
 
-    // Seed auto-map with last saved mapping (if any)
+    // seed guess with last mapping
     const savedDefaults: Partial<Mapping> | null = (() => {
       try { return JSON.parse(localStorage.getItem("oc:lastMapping") || "null"); }
       catch { return null; }
@@ -468,15 +456,14 @@ async function handleCuttingList(file: File | null) {
     try { localStorage.setItem("oc:lastMapping", JSON.stringify(mapping)); } catch {}
 
     const normalized = normalizeRows(headers, rows, mapping);
-    if (normalized.length === 0) {
+    if (!normalized.length) {
       setStatus("err", "Mapping applied, but no valid rows were produced (check required fields).");
       return;
     }
 
-    // Store and show components modal (not inline)
     lastParts = normalized.slice();
     setStatus("ok", `Mapped to ${lastParts.length.toLocaleString()} part(s).`);
-    openComponentsModal(lastParts);
+    openComponentsModal(lastParts); // show the handler
   } catch (err: any) {
     console.error(err);
     setStatus("err", `Failed to read CSV: ${err?.message ?? err}`);
@@ -487,43 +474,28 @@ async function handleCuttingList(file: File | null) {
 
 async function repackAndRender() {
   const boards = getBoards();
-  console.debug("[main] repackAndRender boards:", boards.length, boards.slice(0, 2));
-
   if (!boards.length) {
     setStatus("err", "No boards loaded. Upload your Master Materials CSV first.");
-    console.warn("packPartsToSheets aborted: no boards in state.");
     return;
   }
   if (!lastParts.length) {
     setStatus("err", "No parts loaded. Upload your Cutting List CSV.");
-    console.warn("packPartsToSheets aborted: no parts.");
     return;
   }
 
   const s = getSettings();
 
-  // Deterministic pre-fit check
-  const fitsAnyBoard = (p: NestablePart, bs: typeof boards, margin: number) => {
-    for (const b of bs) {
-      const wA = Math.max(0, (b.width ?? 0)  - 2 * margin);
-      const hA = Math.max(0, (b.height ?? 0) - 2 * margin);
+  const fitsAnyBoard = (p: NestablePart) => {
+    for (const b of boards) {
+      const wA = Math.max(0, (b.width ?? 0)  - 2 * s.margin);
+      const hA = Math.max(0, (b.height ?? 0) - 2 * s.margin);
       if ((p.w <= wA && p.h <= hA) || (p.h <= wA && p.w <= hA)) return true;
     }
     return false;
   };
-
-  const offenders = lastParts.filter(p => !fitsAnyBoard(p, boards, s.margin));
+  const offenders = lastParts.filter(p => !fitsAnyBoard(p));
   if (offenders.length === lastParts.length) {
-    const show = offenders.slice(0, 6).map(p => `${p.name ?? p.id ?? "part"} (${Math.round(p.w)}×${Math.round(p.h)})`);
-    const boardSamples = boards.slice(0, 3).map(b => `${Math.round(b.width)}×${Math.round(b.height)}`);
-    setStatus(
-      "err",
-      `No parts physically fit any board (mm). Examples: ${show.join(", ")}. Boards: ${boardSamples.join(", ")}. ` +
-      `Check Length/Width mapping and margins.`
-    );
-    console.warn("[main] deterministic fit check failed (mm).", {
-      margin: s.margin, sampleBoards: boards.slice(0, 3), sampleParts: offenders.slice(0, 6),
-    });
+    setStatus("err", "No parts fit the available boards (check units/margins).");
     return;
   }
 
@@ -536,7 +508,6 @@ async function repackAndRender() {
       fallbackThreshold: 0.65,
     });
   };
-
   const flattenPack = (p: PackResult): SheetLayout[] => {
     if (hasByMaterial(p)) return (Object.values(p.byMaterial) as SheetLayout[][]).flat();
     if (hasSheets(p))     return (p as import("./nesting/types").PackResultFlat).sheets;
@@ -547,30 +518,16 @@ async function repackAndRender() {
   let flatSheets = flattenPack(pack);
   if (flatSheets.length === 0) {
     setStatus("neutral", "No placements with material matching; retrying without material tags…");
-    console.warn("[main] no sheets with tags; retrying without tags");
     pack = tryPack(lastParts, true);
     flatSheets = flattenPack(pack);
   }
 
   lastPack = pack;
-
   if (flatSheets.length) {
-    console.debug("[main] flatSheets:", flatSheets.length);
     setStatus("ok", `Generated ${flatSheets.length} sheet(s).`);
     emit(Events.LAYOUTS_READY, { sheets: flatSheets });
   } else {
-    const stillTooBig = lastParts
-      .filter(p => !fitsAnyBoard(p, boards, s.margin))
-      .slice(0, 6)
-      .map(p => `${p.name ?? p.id ?? "part"} (${Math.round(p.w)}×${Math.round(p.h)})`);
-    const msg = stillTooBig.length
-      ? `No sheets produced. These items don't fit: ${stillTooBig.join(", ")}. Check mm sizes & mapping.`
-      : `No sheets produced. Likely all placements blocked by tags or board copies=0. ` +
-        `Try ensuring Material Tag matches or set Copies>0 for at least one board.`;
-    setStatus("err", msg);
-    console.warn("[main] packing yielded 0 sheets, diagnostics:", {
-      boards: boards.slice(0, 3), parts: lastParts.slice(0, 6), margin: s.margin, kerf: s.kerf,
-    });
+    setStatus("err", "Packing produced no sheets (check tags / copies / sizes).");
   }
 }
 
@@ -632,14 +589,13 @@ function openComponentsModal(parts: NestablePart[]) {
   const closeBtn = pill("Close", () => overlay.remove());
   const optimizeBtn = primary("Optimize →", async () => {
     overlay.remove();
-    showSvgAfterPack = true; // tell LAYOUTS_READY handler to open SVG modal
+    showSvgAfterPack = true;     // trigger overlay open after pack
     await repackAndRender();
   });
   right.append(closeBtn, optimizeBtn);
 
-  footer.append(left, right);
-
   modal.append(header, body, footer);
+  footer.append(left, right);
   overlay.appendChild(modal);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
   window.addEventListener("keydown", function onEsc(e) {
@@ -649,7 +605,7 @@ function openComponentsModal(parts: NestablePart[]) {
 }
 
 function buildEditableComponentsTable(parts: NestablePart[]) {
-  // Compact, touch-friendly table with essential fields + Details button
+  // Compact, touch-friendly table. Shows up to notes2 (as requested) + Details
   const table = document.createElement("table");
   table.style.width = "100%";
   table.style.borderCollapse = "separate";
@@ -657,7 +613,7 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
-  const headers = ["Name", "Material", "Length", "Width", "Qty", ""];
+  const headers = ["Name", "Material/Tag", "Length", "Width", "Qty", "Notes1", "Notes2", ""];
   for (const label of headers) {
     const th = document.createElement("th");
     th.textContent = label;
@@ -686,7 +642,7 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
       return cell;
     };
 
-    const input = (val: string | number, type: "text" | "number" = "text", step?: string) => {
+    const input = (val: string | number, type: "text" | "number" = "text", step?: string, onCommit?: (v: any) => void) => {
       const i = document.createElement("input");
       i.type = type;
       if (type === "number" && step) i.step = step;
@@ -696,22 +652,20 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
       i.style.borderRadius = "8px";
       i.style.width = "100%";
       i.addEventListener("change", () => {
-        // live-update the part object
-        // map fields by column order
-        p.name = nameI.value || p.name;
-        (p as any).materialTag = materialI.value || (p as any).materialTag;
-        p.h = Number(lenI.value) || p.h;
-        p.w = Number(widI.value) || p.w;
-        (p as any).qty = Number(qtyI.value) || (p as any).qty || 1;
+        const v = (i.type === "number") ? Number(i.value) : i.value;
+        onCommit?.(v);
       });
       return i;
     };
 
-    const nameI = input(p.name ?? p.id ?? "", "text");
-    const materialI = input((p as any).materialTag ?? (p as any).material ?? "", "text");
-    const lenI = input(p.h, "number", "1");
-    const widI = input(p.w, "number", "1");
-    const qtyI = input((p as any).qty ?? 1, "number", "1");
+    const nameI = input(p.name ?? (p as any).id ?? "", "text", undefined, (v) => { p.name = v; });
+    const matI = input((p as any).materialTag ?? (p as any).material ?? "", "text", undefined,
+      (v) => { (p as any).materialTag = v; (p as any).material = v; });
+    const lenI = input(p.h, "number", "1", (v) => { p.h = v; });
+    const widI = input(p.w, "number", "1", (v) => { p.w = v; });
+    const qtyI = input((p as any).qty ?? 1, "number", "1", (v) => { (p as any).qty = v; });
+    const n1I  = input((p as any).notes1 ?? "", "text", undefined, (v) => { (p as any).notes1 = v; });
+    const n2I  = input((p as any).notes2 ?? "", "text", undefined, (v) => { (p as any).notes2 = v; });
 
     const detailsBtn = document.createElement("button");
     detailsBtn.textContent = "Details";
@@ -720,10 +674,11 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
     detailsBtn.style.borderRadius = "8px";
     detailsBtn.style.background = "#fff";
     detailsBtn.style.cursor = "pointer";
-    detailsBtn.onclick = () => openSvgPartActionModal(p, `list-${p.id ?? p.name ?? Math.random().toString(36).slice(2)}`);
+    detailsBtn.onclick = () =>
+      openSvgPartActionModal(p, `list-${(p as any).id ?? p.name ?? Math.random().toString(36).slice(2)}`);
 
     tr.append(
-      td(nameI), td(materialI), td(lenI), td(widI), td(qtyI),
+      td(nameI), td(matI), td(lenI), td(widI), td(qtyI), td(n1I), td(n2I),
       td(detailsBtn)
     );
     tbody.appendChild(tr);
@@ -740,9 +695,10 @@ function addComponentRow(body: HTMLElement, parts: NestablePart[]) {
     h: 0,
     qty: 1,
     materialTag: "",
+    notes1: "",
+    notes2: "",
   } as any;
   parts.push(p);
-  // rebuild table
   body.innerHTML = "";
   body.appendChild(buildEditableComponentsTable(parts));
 }
@@ -817,13 +773,6 @@ function openSvgModal(sheets: SheetLayout[]) {
   content.appendChild(frame);
 
   overlay.append(topBar, content);
-  overlay.addEventListener("click", (e) => {
-    // click outside to close is disabled in this modal; only Back button
-    // if (e.target === overlay) overlay.remove();
-  });
-  window.addEventListener("keydown", function onEsc(e) {
-    if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); }
-  });
 
   // Group sheets by a material-ish key
   const groups = groupByMaterial(sheets);
@@ -875,7 +824,6 @@ function openSvgModal(sheets: SheetLayout[]) {
     const arr = groups[activeKey] || [];
     const sheet = arr[activeIdx];
     if (!sheet) return;
-    // Use direct single-sheet renderer for the modal
     const host = document.createElement("div");
     host.style.width = "100%";
     host.style.height = "100%";

@@ -21,21 +21,32 @@ export interface PrinterSettings {
 
 /** SVG look & feel, configurable via settings UI */
 export interface SvgStyleSettings {
+  // board
   boardStroke: string;
   boardStrokeWidth: number;
   boardFill: string;
 
+  // parts
   partStroke: string;
   partStrokeWidth: number;
   partFill: string;          // unprinted
   partPrintedFill: string;   // printed
 
+  // text
   labelColor: string;        // component name color
   dimColor: string;          // dimension text color
 
-  cutLineColor: string;      // dashed “toolpath” look
+  // toolpath/cut line
+  cutLineColor: string;      
   cutLineWidth: number;
 
+  // edging styles (legend + per-edge strokes)
+  edgeSolidColor: string;
+  edgeShortDashColor: string;
+  edgeLongDashColor: string;
+  edgeDotColor: string;
+
+  // behavior
   showTooltips: boolean;
   touchTargetPadding: number; // px of extra aura when tapping parts
 }
@@ -81,23 +92,34 @@ const DEFAULTS: Settings = {
   },
 
   svgStyle: {
-    boardStroke: "#1f2937",
-    boardStrokeWidth: 2,
-    boardFill: "#ffffff",
+    // board
+    boardStroke: "#111827",
+    boardStrokeWidth: 3,
+    boardFill: "#f8fafc",
 
-    partStroke: "#111827",
-    partStrokeWidth: 2.5,
-    partFill: "#e5e7eb",
+    // parts
+    partStroke: "#0f172a",
+    partStrokeWidth: 3,
+    partFill: "#ffffff",
     partPrintedFill: "#2563eb",
 
+    // text
     labelColor: "#0f172a",
     dimColor: "#334155",
 
+    // toolpath
     cutLineColor: "#ef4444",
     cutLineWidth: 2,
 
+    // edging colors
+    edgeSolidColor: "#0ea5e9",      // cyan-500
+    edgeShortDashColor: "#10b981",  // emerald-500
+    edgeLongDashColor: "#f59e0b",   // amber-500
+    edgeDotColor: "#a855f7",        // purple-500
+
+    // behavior
     showTooltips: true,
-    touchTargetPadding: 4,
+    touchTargetPadding: 6,
   },
 };
 
@@ -124,9 +146,7 @@ function save() {
   try { localStorage.setItem("oc:settings", JSON.stringify(current)); } catch {}
 }
 
-export function getSettings(): Settings {
-  return current;
-}
+export function getSettings(): Settings { return current; }
 
 export function setSettings(patch: Partial<Settings>) {
   current = {
@@ -139,7 +159,7 @@ export function setSettings(patch: Partial<Settings>) {
     svgStyle: { ...current.svgStyle,  ...(patch.svgStyle  || {}) },
   };
   save();
-  // no payload to avoid import cycle
+  // no payload to avoid import cycle with events subscribers
   emit(Events.SETTINGS_UPDATED);
 }
 

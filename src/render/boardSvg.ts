@@ -1,408 +1,327 @@
-// src/render/boardSvg.ts
+/* src/render/boardSvg.ts — full replacement
+   - Landscape-by-default viewport
+   - Bold strokes; labels inside parts; board dims outside
+   - Part selection + double-click/tap → PART_CLICKED
+   - Printed state color; dashed “cut line”
+   - Edging legend (uses internal defaults if edge colors missing from settings)
+*/
+
 import type { SheetLayout, PlacedPart } from "../nesting/types";
-import { fmtLen } from "./dimensions";
 import { getSettings } from "../state/settings";
 import { on, emit, Events } from "../events";
 import { isPrinted } from "../state/partStatus";
-import { exportSvgElement, exportSvgToPng, exportAllSheetsZIP } from "./export";
 
-/* -------------------------------------------------------------------------- */
-/*                              Public interface                               */
-/* -------------------------------------------------------------------------- */
-
-/** Legacy pager for inline view; keeps working alongside fullscreen modal */
+/** Simple pager (legacy inline view in #board-svg) */
 export function createBoardPager(host: HTMLElement, sheets: SheetLayout[]) {
   host.innerHTML = "";
-  let currentSheets: SheetLayout[] = sheets.slice();
-  let selectedIndex = 0;
-  let svgWrap: HTMLDivElement | null = null;
+  if (!sheets.length) return;
 
-  const pager = document.createElement("div");
-  pager.className = "pager";
+  let idx = 0;
+
+  const bar = document.createElement("div");
+  bar.style.cssText = "display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;";
 
   const info = document.createElement("span");
-  info.className = "pill";
+  info.textContent = `${sheets.length} sheet(s)`;
 
-  const sel = document.createElement("select");
-  sel.addEventListener("change", () => {
-    selectedIndex = Number(sel.value || 0);
-    draw();
+  const select = document.createElement("select");
+  sheets.forEach((_, i) => {
+    const o = document.createElement("option");
+    o.value = String(i);
+    o.textContent = `Sheet ${i + 1}`;
+    select.appendChild(o);
   });
+  select.onchange = () => { idx = Number(select.value || 0); draw(); };
 
-  const expSvg = document.createElement("button");
-  expSvg.textContent = "Export SVG";
-  expSvg.addEventListener("click", () => {
-    const svg = svgWrap?.querySelector("svg") as SVGSVGElement | null;
-    if (svg) exportSvgElement(svg, `sheet-${selectedIndex + 1}.svg`);
-  });
+  bar.append(info, select);
+  host.appendChild(bar);
 
-  const expPng = document.createElement("button");
-  expPng.textContent = "Export PNG";
-  expPng.addEventListener("click", () => {
-    const svg = svgWrap?.querySelector("svg") as SVGSVGElement | null;
-    if (svg) exportSvgToPng(svg, `sheet-${selectedIndex + 1}.png`);
-  });
-
-  const expZip = document.createElement("button");
-  expZip.textContent = "Export All (ZIP)";
-  expZip.addEventListener("click", async () => {
-    await exportAllSheetsZIP(currentSheets, "sheets.zip");
-  });
-
-  pager.append(info, sel, expSvg, expPng, expZip);
-  host.appendChild(pager);
-
-  svgWrap = document.createElement("div");
-  svgWrap.style.width = "100%";
-  svgWrap.style.height = "70vh";
-  svgWrap.style.border = "1px solid #e5e7eb";
-  svgWrap.style.borderRadius = "10px";
-  svgWrap.style.overflow = "hidden";
-  host.appendChild(svgWrap);
-
-  function refillSelect() {
-    sel.innerHTML = "";
-    currentSheets.forEach((_, i) => {
-      const o = document.createElement("option");
-      o.value = String(i);
-      o.textContent = `Sheet ${i + 1} / ${currentSheets.length}`;
-      sel.appendChild(o);
-    });
-    info.textContent = `${currentSheets.length} sheet(s)`;
-  }
+  const mount = document.createElement("div");
+  // landscape container
+  mount.style.cssText =
+    "width:100%;height:min(78vh,820px);background:#f3f4f6;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;";
+  host.appendChild(mount);
 
   function draw() {
-    if (!svgWrap) return;
-    svgWrap.innerHTML = "";
-    const idx = Math.min(Math.max(0, selectedIndex), Math.max(0, currentSheets.length - 1));
-    const sheet = currentSheets[idx];
+    mount.innerHTML = "";
+    const sheet = sheets[idx];
     if (!sheet) return;
-    renderBoardSvg(svgWrap, sheet, idx);
+    renderBoardSvg(mount, sheet, idx);
   }
 
-  refillSelect();
-  if (currentSheets.length) {
-    sel.value = "0";
-    selectedIndex = 0;
-    draw();
-  }
-
+  draw();
   on(Events.SETTINGS_UPDATED, () => draw());
-
-  // recolor one rect on status changes without full re-render
-  on(Events.PART_STATUS_CHANGED, ({ pid, printed }) => {
-    if (!svgWrap) return;
-    const el = svgWrap.querySelector<SVGRectElement>(`rect.oc-part[data-pid="${cssEscape(pid)}"]`);
-    if (!el) return;
-    const S = getSettings();
-    el.classList.toggle("printed", !!printed);
-    el.setAttribute("fill", printed ? S.svgStyle.partPrintedFill : S.svgStyle.partFill);
-    el.classList.remove("selected");
-    el.setAttribute("stroke", S.svgStyle.partStroke);
-    el.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth));
-  });
 }
 
-/**
- * Render a single sheet into host. Landscape-first viewport; if the board is
- * portrait we rotate it so the viewport stays landscape, while the whole board
- * remains visible. Touch-friendly pan/zoom; labels inside parts.
- */
+/** Render a single sheet (used by modal and pager). */
 export function renderBoardSvg(host: HTMLElement, sheet: SheetLayout, sheetIdx = 0) {
   host.innerHTML = "";
   const S = getSettings();
+  const V = S.svgStyle;
 
-  // Keep a landscape viewport by rotating tall boards
-  const rotate = sheet.width < sheet.height;
-  const viewW = rotate ? sheet.height : sheet.width;
-  const viewH = rotate ? sheet.width : sheet.height;
+  // Wrapper sized like a landscape viewport
+  const wrap = document.createElement("div");
+  wrap.style.cssText = "position:relative;width:100%;height:100%;background:#f3f4f6;";
+  host.appendChild(wrap);
 
-  const svg = createSVG(viewW, viewH);
-  svg.classList.add("board");
-  svg.setAttribute("viewBox", `0 0 ${viewW} ${viewH}`);
+  const svg = svgEl();
   svg.setAttribute("width", "100%");
   svg.setAttribute("height", "100%");
   svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
-  svg.style.background = "#ffffff";
-
-  // Root <g> for optional rotation — cast to SVGGElement for TS
-  const gRoot = document.createElementNS(svg.namespaceURI, "g") as SVGGElement;
-  if (rotate) {
-    gRoot.setAttribute("transform", `rotate(90) translate(0 ${-sheet.width})`);
-  }
-  svg.appendChild(gRoot);
+  svg.setAttribute("viewBox", `0 0 ${Math.max(1, sheet.width)} ${Math.max(1, sheet.height)}`);
+  (svg.style as any).touchAction = "none";
+  wrap.appendChild(svg);
 
   // Board outline
-  const border = rect(0, 0, sheet.width, sheet.height, S.svgStyle.boardStroke, S.svgStyle.boardFill);
-  border.setAttribute("stroke-width", String(S.svgStyle.boardStrokeWidth));
-  border.addEventListener("click", () => clearSelection(svg, S));
-  gRoot.appendChild(border);
+  const gBoard = gEl();
+  const board = rect(sheet.x ?? 0, sheet.y ?? 0, sheet.width, sheet.height, V.boardStroke, V.boardFill, V.boardStrokeWidth);
+  gBoard.appendChild(board);
+  svg.appendChild(gBoard);
 
-  // Board dimensions (outside the board)
-  drawBoardDimensions(gRoot, sheet, S);
+  // Board dimensions outside: top & right
+  const topTxt = txt(sheet.width / 2, -8, fmtLen(sheet.width, S.units), V.dimColor, S.svgFont);
+  topTxt.setAttribute("text-anchor", "middle");
+  svg.appendChild(topTxt);
+
+  const rightTxt = txt(sheet.width + 8, sheet.height / 2, fmtLen(sheet.height, S.units), V.dimColor, S.svgFont);
+  rightTxt.setAttribute("text-anchor", "start");
+  rightTxt.setAttribute("transform", `rotate(90 ${sheet.width + 8} ${sheet.height / 2})`);
+  svg.appendChild(rightTxt);
 
   // Parts
-  sheet.placed.forEach((p, idx) => {
-    drawPart(gRoot, p, sheetIdx, idx, S);
+  sheet.placed.forEach((p, i) => drawPart(svg, p, sheetIdx, i));
+
+  // Edging legend to the right (uses fallback colors if not present)
+  drawLegend(svg, sheet.width + 40, 20);
+
+  // Click board to clear selection highlight
+  board.addEventListener("click", () => {
+    svg.querySelectorAll<SVGRectElement>("rect.oc-part.selected").forEach(el => {
+      el.classList.remove("selected");
+      el.setAttribute("stroke", V.partStroke);
+      el.setAttribute("stroke-width", String(V.partStrokeWidth));
+    });
   });
 
-  host.appendChild(svg);
   enablePanZoom(svg);
-}
 
-/* -------------------------------------------------------------------------- */
-/*                                   helpers                                  */
-/* -------------------------------------------------------------------------- */
-
-function drawPart(root: SVGGElement, p: PlacedPart, sheetIdx: number, idx: number, S: ReturnType<typeof getSettings>) {
-  const ns = root.namespaceURI!;
-  const svg = root.ownerSVGElement!;
-  const pid = partIdFor(p, sheetIdx, idx);
-  const printed = isPrinted(pid);
-
-  const g = document.createElementNS(ns, "g") as SVGGElement;
-  g.classList.add("oc-part-wrap");
-
-  // main rectangle
-  const r = rect(p.x, p.y, p.w, p.h, S.svgStyle.partStroke, printed ? S.svgStyle.partPrintedFill : S.svgStyle.partFill);
-  r.classList.add("oc-part");
-  r.setAttribute("data-pid", pid);
-  r.setAttribute("fill-opacity", "1.0");
-  r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth));
-
-  if (S.svgStyle.showTooltips) {
-    const titleEl = document.createElementNS(ns, "title");
-    titleEl.textContent = `${p.name || p.id || ""} — ${fmtLen(p.w, S.units)} × ${fmtLen(p.h, S.units)}`;
-    r.appendChild(titleEl);
-  }
-
-  // Touch target "aura"
-  if (S.svgStyle.touchTargetPadding > 0) {
-    const pad = S.svgStyle.touchTargetPadding;
-    const aura = rect(p.x - pad, p.y - pad, p.w + pad * 2, p.h + pad * 2, "transparent", "transparent");
-    aura.setAttribute("pointer-events", "fill");
-    aura.addEventListener("mouseenter", () => {
-      svg.style.cursor = "pointer";
-      if (!r.classList.contains("selected")) {
-        r.setAttribute("stroke", "#1d4ed8");
-        r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth + 1));
-      }
-    });
-    aura.addEventListener("mouseleave", () => {
-      svg.style.cursor = "default";
-      if (!r.classList.contains("selected")) {
-        r.setAttribute("stroke", S.svgStyle.partStroke);
-        r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth));
-      }
-    });
-    aura.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      selectPart(svg, r, S);
-    });
-    aura.addEventListener("dblclick", (ev) => {
-      ev.stopPropagation();
-      emit(Events.PART_CLICKED, { pid, part: p, sheetIdx });
-    });
-    g.appendChild(aura);
-  }
-
-  // Hover / click on rect too
-  r.addEventListener("mouseenter", () => {
-    svg.style.cursor = "pointer";
-    if (!r.classList.contains("selected")) {
-      r.setAttribute("stroke", "#1d4ed8");
-      r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth + 1));
-    }
+  // Re-render on settings changes (if still mounted)
+  on(Events.SETTINGS_UPDATED, () => {
+    if (!svg.isConnected) return;
+    renderBoardSvg(host, sheet, sheetIdx);
   });
-  r.addEventListener("mouseleave", () => {
-    svg.style.cursor = "default";
-    if (!r.classList.contains("selected")) {
-      r.setAttribute("stroke", S.svgStyle.partStroke);
-      r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth));
-    }
-  });
-  r.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    selectPart(svg, r, S);
-  });
-  r.addEventListener("dblclick", (ev) => {
-    ev.stopPropagation();
-    emit(Events.PART_CLICKED, { pid, part: p, sheetIdx });
-  });
-
-  g.appendChild(r);
-
-  // Dashed "cut line" inset by kerf/2
-  const inset = Math.max(0, (S.kerf ?? 0) / 2);
-  if (inset > 0 && p.w - inset * 2 > 0 && p.h - inset * 2 > 0) {
-    const dashed = rect(p.x + inset, p.y + inset, p.w - inset * 2, p.h - inset * 2, S.svgStyle.cutLineColor, "none");
-    dashed.setAttribute("stroke-dasharray", "6 4");
-    dashed.setAttribute("stroke-width", String(S.svgStyle.cutLineWidth));
-    dashed.setAttribute("pointer-events", "none");
-    g.appendChild(dashed);
-  }
-
-  // Labels inside the part
-  const longIsX = p.w >= p.h;
-  const midX = p.x + p.w / 2;
-  const midY = p.y + p.h / 2;
-
-  // Name centered along long axis
-  const name = text(midX, midY, p.name || p.id || "");
-  name.setAttribute("font-family", S.svgFont.family);
-  name.setAttribute("font-size", String(Math.max(10, S.svgFont.size)));
-  name.setAttribute("fill", S.svgStyle.labelColor);
-  name.setAttribute("font-weight", "700");
-  name.setAttribute("text-anchor", "middle");
-  name.setAttribute("dominant-baseline", "middle");
-  if (!longIsX) name.setAttribute("transform", `rotate(-90 ${midX} ${midY})`);
-  g.appendChild(name);
-
-  // Dimensions (inside)
-  const dimLong = `${fmtLen(longIsX ? p.w : p.h, S.units)}`;
-  const dimShort = `${fmtLen(longIsX ? p.h : p.w, S.units)}`;
-
-  // Long side label
-  const longLabel = text(midX, midY + (longIsX ? p.h * 0.18 : 0), dimLong);
-  longLabel.setAttribute("font-family", S.svgFont.family);
-  longLabel.setAttribute("font-size", String(Math.max(9, S.svgFont.size - 1)));
-  longLabel.setAttribute("fill", S.svgStyle.dimColor);
-  longLabel.setAttribute("text-anchor", "middle");
-  longLabel.setAttribute("dominant-baseline", "middle");
-  if (!longIsX) longLabel.setAttribute("transform", `rotate(-90 ${midX} ${midY + p.w * 0.18})`);
-  g.appendChild(longLabel);
-
-  // Short side label
-  const shortLabel = text(midX + (longIsX ? 0 : p.h * 0.18), midY, dimShort);
-  shortLabel.setAttribute("font-family", S.svgFont.family);
-  shortLabel.setAttribute("font-size", String(Math.max(9, S.svgFont.size - 1)));
-  shortLabel.setAttribute("fill", S.svgStyle.dimColor);
-  shortLabel.setAttribute("text-anchor", "middle");
-  shortLabel.setAttribute("dominant-baseline", "middle");
-  if (longIsX) shortLabel.setAttribute("transform", `rotate(-90 ${midX} ${midY})`);
-  g.appendChild(shortLabel);
-
-  root.appendChild(g);
 }
 
-function drawBoardDimensions(root: SVGGElement, sheet: SheetLayout, S: ReturnType<typeof getSettings>) {
-  // Board size labels outside the board
-  const topCenterX = sheet.width / 2;
-  const topY = -8;
-  const rightX = sheet.width + 8;
-  const rightCenterY = sheet.height / 2;
+/* -------------------------------- helpers -------------------------------- */
 
-  const wTxt = text(topCenterX, topY, `${fmtLen(sheet.width, S.units)}`);
-  wTxt.setAttribute("font-family", S.svgFont.family);
-  wTxt.setAttribute("font-size", String(Math.max(11, S.svgFont.size)));
-  wTxt.setAttribute("fill", S.svgStyle.dimColor);
-  wTxt.setAttribute("text-anchor", "middle");
-  wTxt.setAttribute("dominant-baseline", "baseline");
-
-  const hTxt = text(rightX, rightCenterY, `${fmtLen(sheet.height, S.units)}`);
-  hTxt.setAttribute("font-family", S.svgFont.family);
-  hTxt.setAttribute("font-size", String(Math.max(11, S.svgFont.size)));
-  hTxt.setAttribute("fill", S.svgStyle.dimColor);
-  hTxt.setAttribute("text-anchor", "start");
-  hTxt.setAttribute("dominant-baseline", "middle");
-  hTxt.setAttribute("transform", `rotate(-90 ${rightX} ${rightCenterY})`);
-
-  root.appendChild(wTxt);
-  root.appendChild(hTxt);
+function svgEl(): SVGSVGElement {
+  return document.createElementNS("http://www.w3.org/2000/svg", "svg") as SVGSVGElement;
 }
-
-function selectPart(svg: SVGSVGElement, r: SVGRectElement, S: ReturnType<typeof getSettings>) {
-  clearSelection(svg, S);
-  r.classList.add("selected");
-  r.setAttribute("stroke", "#7c3aed");
-  r.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth + 1.5));
+function gEl(): SVGGElement {
+  return document.createElementNS("http://www.w3.org/2000/svg", "g") as SVGGElement;
 }
-
-function clearSelection(svg: SVGSVGElement, S: ReturnType<typeof getSettings>) {
-  for (const other of svg.querySelectorAll<SVGRectElement>("rect.oc-part.selected")) {
-    other.classList.remove("selected");
-    other.setAttribute("stroke", S.svgStyle.partStroke);
-    other.setAttribute("stroke-width", String(S.svgStyle.partStrokeWidth));
-  }
+function line(x1:number,y1:number,x2:number,y2:number, stroke:string, width:number, dash?:string) {
+  const ln = document.createElementNS("http://www.w3.org/2000/svg", "line");
+  ln.setAttribute("x1", String(x1)); ln.setAttribute("y1", String(y1));
+  ln.setAttribute("x2", String(x2)); ln.setAttribute("y2", String(y2));
+  ln.setAttribute("stroke", stroke);
+  ln.setAttribute("stroke-width", String(width));
+  if (dash) ln.setAttribute("stroke-dasharray", dash);
+  ln.setAttribute("pointer-events", "none");
+  return ln as SVGLineElement;
 }
-
-function createSVG(w: number, h: number, ns = "http://www.w3.org/2000/svg"): SVGSVGElement {
-  const svg = document.createElementNS(ns, "svg") as unknown as SVGSVGElement;
-  svg.setAttribute("width", String(w));
-  svg.setAttribute("height", String(h));
-  return svg;
-}
-function rect(x: number, y: number, w: number, h: number, stroke = "#000", fill = "none") {
-  const ns = "http://www.w3.org/2000/svg";
-  const r = document.createElementNS(ns, "rect");
-  r.setAttribute("x", String(x));
-  r.setAttribute("y", String(y));
-  r.setAttribute("width", String(w));
-  r.setAttribute("height", String(h));
-  r.setAttribute("stroke", stroke);
-  r.setAttribute("fill", fill);
+function rect(x:number,y:number,w:number,h:number, stroke:string, fill:string, sw=1) {
+  const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+  r.setAttribute("x", String(x)); r.setAttribute("y", String(y));
+  r.setAttribute("width", String(w)); r.setAttribute("height", String(h));
+  r.setAttribute("stroke", stroke); r.setAttribute("fill", fill); r.setAttribute("stroke-width", String(sw));
   return r as SVGRectElement;
 }
-function text(x: number, y: number, content: string) {
-  const ns = "http://www.w3.org/2000/svg";
-  const t = document.createElementNS(ns, "text");
-  t.setAttribute("x", String(x));
-  t.setAttribute("y", String(y));
+function txt(x:number,y:number, content:string, color:string, font:{family:string;size:number}, scale=1) {
+  const t = document.createElementNS("http://www.w3.org/2000/svg", "text");
+  t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
   t.textContent = content;
-  return t;
+  t.setAttribute("fill", color);
+  t.setAttribute("font-size", String(Math.max(8, Math.round(font.size * scale))));
+  t.setAttribute("font-family", font.family);
+  return t as SVGTextElement;
 }
-
-function partIdFor(p: PlacedPart, sheetIdx: number, i: number): string {
-  const base = p.id || `${p.name ?? "part"}-${Math.round(p.w)}x${Math.round(p.h)}`;
+function fmtLen(mm:number, units:"mm"|"in") {
+  if (units === "in") return `${(mm/25.4).toFixed(2)} in`;
+  return `${Math.round(mm)} mm`;
+}
+function partId(p:PlacedPart, sheetIdx:number, i:number) {
+  const base = (p as any).id || p.name || `${Math.round(p.w)}x${Math.round(p.h)}`;
   return `s${sheetIdx}-i${i}-${base}`;
 }
 
-function cssEscape(s: string): string {
-  return s.replace(/["\\]/g, "\\$&");
+function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number) {
+  const S = getSettings();
+  const V = S.svgStyle;
+  const pid = partId(p, sheetIdx, i);
+
+  const g = gEl();
+
+  // Main part rect
+  const fill = isPrinted(pid) ? (V as any).partPrintedFill || "#2563eb" : V.partFill;
+  const r = rect(p.x, p.y, p.w, p.h, V.partStroke, fill, Math.max(2, V.partStrokeWidth));
+  r.classList.add("oc-part");
+  r.setAttribute("data-pid", pid);
+
+  // Hover/selection
+  const highlight = () => {
+    if (!r.classList.contains("selected")) {
+      r.setAttribute("stroke", "#7c3aed");
+      r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth) + 1));
+    }
+  };
+  const unhighlight = () => {
+    if (!r.classList.contains("selected")) {
+      r.setAttribute("stroke", V.partStroke);
+      r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth)));
+    }
+  };
+  g.addEventListener("mouseenter", () => { svg.style.cursor = "pointer"; highlight(); });
+  g.addEventListener("mouseleave", () => { svg.style.cursor = "default"; unhighlight(); });
+
+  r.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    svg.querySelectorAll<SVGRectElement>("rect.oc-part.selected").forEach(el => {
+      el.classList.remove("selected");
+      el.setAttribute("stroke", V.partStroke);
+      el.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth)));
+    });
+    r.classList.add("selected");
+    r.setAttribute("stroke", "#7c3aed");
+    r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth) + 1));
+  });
+
+  const openDetails = () => emit(Events.PART_CLICKED, { pid, part: p, sheetIdx });
+  r.addEventListener("dblclick", (e) => { e.stopPropagation(); openDetails(); });
+  r.addEventListener("touchend", (e) => { e.stopPropagation(); openDetails(); }, { passive: true });
+
+  // Dashed “cut line” inset
+  const inset = Math.max(0.5, S.kerf / 2);
+  const cut = rect(
+    p.x + inset, p.y + inset,
+    Math.max(0, p.w - 2*inset), Math.max(0, p.h - 2*inset),
+    V.cutLineColor, "none", Math.max(2, V.cutLineWidth)
+  );
+  cut.setAttribute("stroke-dasharray", "6 6");
+  cut.setAttribute("pointer-events", "none");
+
+  // Name centered along the long side (inside)
+  const name = String(p.name ?? (p as any).id ?? "");
+  const cx = p.x + p.w/2, cy = p.y + p.h/2;
+  const nameTxt = txt(cx, cy, name, V.labelColor, S.svgFont, 1.0);
+  nameTxt.setAttribute("text-anchor", "middle");
+  if (p.h > p.w) nameTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+
+  // Dimensions INSIDE the part (long & short)
+  const longIsW = p.w >= p.h;
+  const longStr = fmtLen(longIsW ? p.w : p.h, S.units);
+  const shortStr = fmtLen(longIsW ? p.h : p.w, S.units);
+
+  const longTxt = txt(cx, cy + (longIsW ? p.h/2 - 10 : 0), longStr, V.dimColor, S.svgFont, 0.95);
+  longTxt.setAttribute("text-anchor", "middle");
+  if (!longIsW) longTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+
+  const shortTxt = txt(cx + (longIsW ? p.w/2 - 10 : 0), cy, shortStr, V.dimColor, S.svgFont, 0.95);
+  shortTxt.setAttribute("text-anchor", "middle");
+  if (longIsW) shortTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
+
+  // Tooltip
+  if (S.svgStyle.showTooltips) {
+    const t = document.createElementNS(svg.namespaceURI, "title");
+    t.textContent = `${name} — ${fmtLen(p.w, S.units)} × ${fmtLen(p.h, S.units)}`;
+    r.appendChild(t);
+  }
+
+  // Optional edging (simple: any "edging" string applies same style to all sides;
+  // or booleans edgeTop/Right/Bottom/Left)
+  drawEdging(svg, p);
+
+  g.append(r, cut, nameTxt, longTxt, shortTxt);
+  svg.appendChild(g);
 }
 
-/** Touch-friendly pan & zoom (mouse + touch) */
-function enablePanZoom(svg: SVGSVGElement) {
-  const vb = svg.getAttribute("viewBox")?.split(" ").map(Number) as number[] | null;
-  let view: [number, number, number, number];
-  if (vb && vb.length === 4) view = [vb[0], vb[1], vb[2], vb[3]];
-  else view = [0, 0, svg.clientWidth || 100, svg.clientHeight || 100];
+function drawEdging(svg: SVGSVGElement, p: PlacedPart) {
+  const S = getSettings();
+  const V = S.svgStyle as any;
 
-  let isPanning = false;
-  let lastX = 0, lastY = 0;
+  // Fallback edge colors if not present in settings
+  const edgeSolidColor     = V.edgeSolidColor     || V.partStroke || "#111827";
+  const edgeShortDashColor = V.edgeShortDashColor || V.dimColor   || "#334155";
+  const edgeLongDashColor  = V.edgeLongDashColor  || "#0ea5e9";
+  const edgeDotColor       = V.edgeDotColor       || "#ef4444";
 
-  const startPan = (x: number, y: number) => { isPanning = true; lastX = x; lastY = y; };
-  const movePan = (x: number, y: number) => {
-    if (!isPanning) return;
-    const dx = x - lastX, dy = y - lastY;
-    lastX = x; lastY = y;
-    view[0] -= dx;
-    view[1] -= dy;
-    svg.setAttribute("viewBox", view.join(" "));
+  const styles = {
+    solid: { col: edgeSolidColor,     dash: "" },
+    short: { col: edgeShortDashColor, dash: "6 4" },
+    long:  { col: edgeLongDashColor,  dash: "12 8" },
+    dot:   { col: edgeDotColor,       dash: "1 6" },
   };
-  const endPan = () => { isPanning = false; };
+  const resolve = (s?: string) => {
+    const v = (s || "").toLowerCase();
+    if (v.includes("short")) return styles.short;
+    if (v.includes("long"))  return styles.long;
+    if (v.includes("dot"))   return styles.dot;
+    return styles.solid;
+  };
 
-  // Mouse
-  svg.addEventListener("mousedown", (e) => startPan(e.clientX, e.clientY));
-  window.addEventListener("mousemove", (e) => movePan(e.clientX, e.clientY));
-  window.addEventListener("mouseup", endPan);
+  const all = (p as any).edging as string | undefined;
+  const top = (p as any).edgeTop ?? !!all;
+  const right = (p as any).edgeRight ?? !!all;
+  const bottom = (p as any).edgeBottom ?? !!all;
+  const left = (p as any).edgeLeft ?? !!all;
+  const st = resolve(all);
 
-  // Touch (single-finger pan)
-  svg.addEventListener("touchstart", (e) => {
-    if (e.touches.length === 1) startPan(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  svg.addEventListener("touchmove", (e) => {
-    if (e.touches.length === 1) movePan(e.touches[0].clientX, e.touches[0].clientY);
-  }, { passive: true });
-  svg.addEventListener("touchend", endPan, { passive: true });
+  const lw = Math.max(2, S.svgStyle.partStrokeWidth);
+  const x1 = p.x, y1 = p.y, x2 = p.x + p.w, y2 = p.y + p.h;
 
-  // Wheel zoom around center
-  svg.addEventListener("wheel", (e) => {
+  if (top)    svg.appendChild(line(x1, y1, x2, y1, st.col, lw, st.dash));
+  if (right)  svg.appendChild(line(x2, y1, x2, y2, st.col, lw, st.dash));
+  if (bottom) svg.appendChild(line(x2, y2, x1, y2, st.col, lw, st.dash));
+  if (left)   svg.appendChild(line(x1, y2, x1, y1, st.col, lw, st.dash));
+}
+
+function drawLegend(svg: SVGSVGElement, x: number, y: number) {
+  const S = getSettings();
+  const V = S.svgStyle as any;
+
+  const items = [
+    { name: "Solid",  col: V.edgeSolidColor     || V.partStroke || "#111827", dash: "" },
+    { name: "Short",  col: V.edgeShortDashColor || V.dimColor   || "#334155", dash: "6 4" },
+    { name: "Long",   col: V.edgeLongDashColor  || "#0ea5e9",                 dash: "12 8" },
+    { name: "Dotted", col: V.edgeDotColor       || "#ef4444",                 dash: "1 6" },
+  ];
+  items.forEach((it, i) => {
+    const yy = y + i * 24;
+    svg.appendChild(line(x, yy, x + 60, yy, it.col, 3, it.dash));
+    const label = txt(x + 70, yy + 4, it.name, V.dimColor || "#334155", S.svgFont, 0.9);
+    label.setAttribute("text-anchor", "start");
+    svg.appendChild(label);
+  });
+}
+
+function enablePanZoom(svg: SVGSVGElement) {
+  let panning = false, lx = 0, ly = 0;
+  let vb = svg.getAttribute("viewBox")?.split(" ").map(Number) || [0, 0, svg.clientWidth, svg.clientHeight];
+
+  svg.addEventListener("mousedown", e => { panning = true; lx = e.clientX; ly = e.clientY; });
+  window.addEventListener("mouseup", () => { panning = false; });
+  window.addEventListener("mousemove", e => {
+    if (!panning) return;
+    const dx = e.clientX - lx, dy = e.clientY - ly; lx = e.clientX; ly = e.clientY;
+    vb[0] -= dx; vb[1] -= dy; svg.setAttribute("viewBox", vb.join(" "));
+  });
+
+  svg.addEventListener("wheel", e => {
     e.preventDefault();
     const scale = e.deltaY < 0 ? 0.9 : 1.1;
-    const cx = view[0] + view[2] / 2, cy = view[1] + view[3] / 2;
-    view[2] *= scale; view[3] *= scale;
-    view[0] = cx - view[2] / 2; view[1] = cy - view[3] / 2;
-    svg.setAttribute("viewBox", view.join(" "));
+    const cx = vb[0] + vb[2] / 2, cy = vb[1] + vb[3] / 2;
+    vb[2] *= scale; vb[3] *= scale;
+    vb[0] = cx - vb[2] / 2; vb[1] = cy - vb[3] / 2;
+    svg.setAttribute("viewBox", vb.join(" "));
   }, { passive: false });
 }
