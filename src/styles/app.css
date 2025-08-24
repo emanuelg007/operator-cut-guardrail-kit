@@ -21,3 +21,6 @@ th, td { border-bottom: 1px solid #eee; padding: 6px 8px; text-align: left; }
 #board-svg .pager { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
 #board-svg .pill { background:#eef2ff; color:#3730a3; padding:4px 8px; border-radius:999px; font-weight:600; }
 svg.board { display:block; width:min(100%, 1100px); height:auto; border:1px solid #e5e7eb; background:#fff; }
+rect.oc-part { fill: #e5e7eb; stroke: #64748b; }
+rect.oc-part.printed { fill: #2563eb !important; }
+rect.oc-part.selected { stroke: #7c3aed !important; stroke-width: 2px !important; }

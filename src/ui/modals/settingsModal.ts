@@ -1,1 +1,0 @@
-export function settingsModal() {/* stub */}
