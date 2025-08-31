@@ -684,11 +684,8 @@ function primary(label: string, onClick: () => void) {
 }
 
 // Explicit navbar init (defensive)
-import { initNavbar } from "./ui/navbar";
 if (typeof window !== "undefined") {
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", () => initNavbar(), { once: true });
   } else {
-    initNavbar();
   }
 }
