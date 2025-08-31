@@ -1,10 +1,4 @@
-/* src/main.ts — full replacement
-   Flow:
-   1) Upload Master Materials
-   2) Upload Cutting List → Components modal (all key headers visible/editable)
-   3) Optimize → pack → open full-screen SVG overlay with tabs (by material) + sheet buttons
-*/
-
+// src/main.ts
 import { parseCsv } from "./csv/parseCsv";
 import { normalizeRows, type Mapping } from "./csv/normalize";
 import { autoMapHeaders } from "./csv/autoMap";
@@ -26,13 +20,12 @@ import { on, emit, Events } from "./events";
 import { markPrinted, undoPrinted } from "./state/partStatus";
 import { printLabelBrowser } from "./printing/labels";
 
-/* ----------------------------- DOM REFERENCES ----------------------------- */
+/* ----------------------------- DOM REFS ----------------------------- */
 
 // Cutting list
 const fileInput = document.getElementById("fileInput") as HTMLInputElement | null;
 const uploadBtn = document.getElementById("uploadBtn") as HTMLButtonElement | null;
 const statusEl = document.getElementById("status") as HTMLDivElement | null;
-const previewEl = document.getElementById("preview") as HTMLDivElement | null; // legacy area; we keep empty now
 const fileNameEl = document.getElementById("fileName") as HTMLSpanElement | null;
 
 // Master materials
@@ -40,11 +33,11 @@ const materialsFileInput = document.getElementById("materialsFileInput") as HTML
 const uploadMaterialsBtn = document.getElementById("uploadMaterialsBtn") as HTMLButtonElement | null;
 const materialsStatusEl = document.getElementById("materialsStatus") as HTMLSpanElement | null;
 
-// Legacy inline mount (we still render there for dev, but primary view is the overlay)
-const svgContainer = document.getElementById("board-svg") as HTMLElement | null;
-const settingsContainer = document.getElementById("settings") as HTMLElement | null;
+// Legacy inline preview target (not used for list anymore; SVG can still mount here for dev)
+const svgContainer = document.getElementById("board-svg")!;
+const settingsContainer = document.getElementById("settings")!;
 
-/* ------------------------- SETTINGS LAUNCHER (modal) ---------------------- */
+/* ------------------------- SETTINGS LAUNCHER ------------------------- */
 
 setupSettingsLauncher();
 function setupSettingsLauncher() {
@@ -78,13 +71,12 @@ function setupSettingsLauncher() {
       if (typeof ui?.openSettingsModal === "function") return void ui.openSettingsModal();
       if (typeof ui?.initSettingsUI === "function" && settingsContainer) {
         settingsContainer.style.display = "";
-        ui.initSettingsUI(settingsContainer);
-        return;
+        return void ui.initSettingsUI(settingsContainer);
       }
       alert("Settings UI is not available.");
     } catch (err) {
       console.error("[settings] open failed:", err);
-      alert("Could not open Settings (see console).");
+      alert("Could not open Settings (see console)");
     }
   };
 
@@ -92,12 +84,13 @@ function setupSettingsLauncher() {
   btn = document.getElementById("oc-open-settings") as HTMLButtonElement;
   btn.addEventListener("click", openSettings);
 
-  window.addEventListener("keydown", (e: KeyboardEvent) => {
+  const onHotkey = (e: KeyboardEvent) => {
     if (e.key.toLowerCase() !== "s") return;
     const el = document.activeElement as HTMLElement | null;
     const typing = el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
     if (!typing) { e.preventDefault(); openSettings(); }
-  });
+  };
+  window.addEventListener("keydown", onHotkey);
 }
 
 /* --------------------------------- STATE ---------------------------------- */
@@ -115,74 +108,36 @@ function setStatus(type: "ok" | "err" | "neutral", msg: string) {
   statusEl.textContent = msg;
 }
 function showFileName(name: string) { if (fileNameEl) fileNameEl.textContent = name || "No file chosen"; }
-function clearPreview() { if (previewEl) previewEl.innerHTML = ""; }
 
-/* -------------------------- SVG PART ACTION MODAL ------------------------- */
-
+/* -------------------------- PART ACTIONS MODAL -------------------------- */
 function openSvgPartActionModal(p: NestablePart, pid: string) {
   const overlay = document.createElement("div");
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.background = "rgba(0,0,0,0.35)";
-  overlay.style.display = "flex";
-  overlay.style.alignItems = "center";
-  overlay.style.justifyContent = "center";
-  overlay.style.zIndex = "2147483600";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.35);display:flex;align-items:center;justify-content:center;z-index:10000;";
 
   const card = document.createElement("div");
-  card.style.width = "min(680px, 94vw)";
-  card.style.maxHeight = "82vh";
-  card.style.overflow = "auto";
-  card.style.background = "#fff";
-  card.style.borderRadius = "12px";
-  card.style.boxShadow = "0 20px 50px rgba(0,0,0,0.35)";
-  card.style.padding = "16px";
+  card.style.cssText = "width:min(640px,92vw);max-height:80vh;overflow:auto;background:#fff;border-radius:12px;box-shadow:0 20px 50px rgba(0,0,0,0.35);padding:16px;";
 
   const title = document.createElement("h3");
-  title.textContent = `Component — ${p.name ?? (p as any).id ?? ""}`;
+  title.textContent = `Component — ${p.name ?? p.id ?? ""}`;
   title.style.marginTop = "0";
 
-  const facts = document.createElement("div");
-  facts.style.display = "flex";
-  facts.style.gap = "10px";
-  facts.style.flexWrap = "wrap";
-  facts.style.marginBottom = "8px";
-
-  const chip = (k: string, v: string) => {
-    const span = document.createElement("span");
-    span.style.padding = "4px 8px";
-    span.style.border = "1px solid #e5e7eb";
-    span.style.borderRadius = "8px";
-    span.style.background = "#f9fafb";
-    span.textContent = `${k}: ${v}`;
-    return span;
-  };
-  facts.append(
-    chip("Material", String((p as any).materialTag ?? (p as any).material ?? "")),
-    chip("Size", `${Math.round(p.w)} × ${Math.round(p.h)} mm`),
-    chip("Qty", String((p as any).qty ?? 1)),
-  );
-
-  // Full editable table of all fields
   const table = document.createElement("table");
   table.style.width = "100%";
   table.style.borderCollapse = "collapse";
   const tbody = document.createElement("tbody");
-  (Object.keys(p) as (keyof typeof p)[]).forEach((k) => {
+  Object.entries(p as unknown as Record<string, unknown>).forEach(([k, v]) => {
     const tr = document.createElement("tr");
     const ktd = document.createElement("td");
     const vtd = document.createElement("td");
-    ktd.textContent = String(k);
+    ktd.textContent = k;
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = String(v ?? "");
+    input.style.cssText = "width:100%;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;";
+    input.onchange = () => ((p as any)[k] = input.value);
+    vtd.appendChild(input);
     ktd.style.fontWeight = "600";
     ktd.style.width = "30%";
-    const inp = document.createElement("input");
-    inp.type = (typeof (p as any)[k] === "number") ? "number" : "text";
-    inp.value = String((p as any)[k] ?? "");
-    inp.style.cssText = "width:100%;padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;";
-    inp.addEventListener("change", () => {
-      (p as any)[k] = (inp.type === "number") ? Number(inp.value) : inp.value;
-    });
-    vtd.appendChild(inp);
     for (const td of [ktd, vtd]) { td.style.borderBottom = "1px solid #eee"; td.style.padding = "6px 8px"; }
     tr.append(ktd, vtd);
     tbody.appendChild(tr);
@@ -190,56 +145,44 @@ function openSvgPartActionModal(p: NestablePart, pid: string) {
   table.appendChild(tbody);
 
   const bar = document.createElement("div");
-  bar.style.display = "flex";
-  bar.style.justifyContent = "flex-end";
-  bar.style.gap = "8px";
-  bar.style.marginTop = "12px";
-  const btn = (label: string, fn: () => void) => {
+  bar.style.cssText = "display:flex;justify-content:flex-end;gap:8px;margin-top:12px;";
+  const pill = (label: string, onClick: () => void) => {
     const b = document.createElement("button");
-    b.textContent = label;
-    b.style.padding = "6px 12px";
-    b.style.border = "1px solid #d1d5db";
-    b.style.borderRadius = "8px";
-    b.style.background = "#fff";
-    b.style.cursor = "pointer";
-    b.onclick = fn;
+    b.type = "button"; b.textContent = label;
+    b.style.cssText = "padding:6px 12px;border:1px solid #d1d5db;border-radius:8px;background:#fff;cursor:pointer;";
+    b.onclick = onClick;
     return b;
   };
 
-  const printBtn = btn("Print", () => {
+  const printBtn = pill("Print", () => {
     printLabelBrowser({
-      id: (p as any).id,
-      name: p.name,
-      material: (p as any).material,
-      materialTag: (p as any).materialTag,
-      w: p.w,
-      h: p.h,
-      notes1: (p as any).notes1,
-      notes2: (p as any).notes2,
+      id: (p as any).id, name: p.name,
+      material: (p as any).material, materialTag: (p as any).materialTag,
+      w: p.w, h: p.h, notes1: (p as any).notes1, notes2: (p as any).notes2,
     });
     markPrinted(pid);
     emit(Events.PART_STATUS_CHANGED, { pid, printed: true });
     overlay.remove();
   });
-  const undoBtn = btn("Undo", () => {
+
+  const undoBtn = pill("Undo", () => {
     undoPrinted(pid);
     emit(Events.PART_STATUS_CHANGED, { pid, printed: false });
     overlay.remove();
   });
-  const closeBtn = btn("Close", () => overlay.remove());
 
+  const closeBtn = pill("Close", () => overlay.remove());
   bar.append(printBtn, undoBtn, closeBtn);
-  card.append(title, facts, table, bar);
-  overlay.appendChild(card);
 
+  card.append(title, table, bar);
+  overlay.appendChild(card);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-  window.addEventListener("keydown", function onEsc(e) {
-    if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); }
-  });
+  window.addEventListener("keydown", function onEsc(e) { if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); } });
+
   document.body.appendChild(overlay);
 }
 
-/* --------------------- MAPPING (modal or fallback drawer) ----------------- */
+/* --------------------- HEADER MAP (modal OR fallback) -------------------- */
 
 type DrawerResolve = (m: Mapping) => void;
 
@@ -250,83 +193,52 @@ function buildFallbackMapDrawer(
 ) {
   const overlay = document.createElement("div");
   overlay.id = "header-map-fallback-overlay";
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.background = "rgba(0,0,0,0.40)";
-  overlay.style.zIndex = "2147483000";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.40);z-index:2147483000;";
 
   const panel = document.createElement("div");
-  panel.style.position = "fixed";
-  panel.style.top = "0";
-  panel.style.right = "0";
-  panel.style.width = "460px";
-  panel.style.height = "100%";
-  panel.style.background = "#fff";
-  panel.style.boxShadow = "-8px 0 30px rgba(0,0,0,0.25)";
-  panel.style.padding = "16px";
-  panel.style.display = "flex";
-  panel.style.flexDirection = "column";
-  panel.style.gap = "12px";
+  panel.style.cssText = "position:fixed;top:0;right:0;width:460px;height:100%;background:#fff;box-shadow:-8px 0 30px rgba(0,0,0,0.25);padding:16px;display:flex;flex-direction:column;gap:12px;";
   panel.id = "header-map-fallback";
 
   const title = document.createElement("h3");
   title.textContent = "Map CSV headers → Required fields";
   title.style.margin = "0 0 8px";
 
-  const fields: (keyof Mapping)[] = ["Name", "Material", "Length", "Width", "Qty"];
+  const fields: (keyof Mapping)[] = ["Name","Material","Length","Width","Qty"];
   const form = document.createElement("form");
   form.onsubmit = (e) => { e.preventDefault(); };
 
   const selects: Partial<Record<keyof Mapping, HTMLSelectElement>> = {};
   for (const key of fields) {
     const label = document.createElement("label");
-    label.style.display = "grid";
-    label.style.gap = "6px";
+    label.style.display = "grid"; label.style.gap = "6px";
     label.textContent = key;
 
     const sel = document.createElement("select");
-    sel.style.padding = "6px 8px";
-    sel.style.border = "1px solid #d1d5db";
-    sel.style.borderRadius = "8px";
+    sel.style.cssText = "padding:6px 8px;border:1px solid #d1d5db;border-radius:8px;";
 
     const blank = document.createElement("option");
-    blank.value = "";
-    blank.textContent = "(choose column)";
-    sel.appendChild(blank);
+    blank.value = ""; blank.textContent = "(choose column)"; sel.appendChild(blank);
 
     for (const h of headers) {
       const opt = document.createElement("option");
-      opt.value = h;
-      opt.textContent = h;
-      sel.appendChild(opt);
+      opt.value = h; opt.textContent = h; sel.appendChild(opt);
     }
     const preset = (seed?.[key] as string | undefined) ?? "";
     if (preset) sel.value = preset;
 
-    selects[key] = sel;
-    label.appendChild(sel);
-    form.appendChild(label);
+    selects[key] = sel; label.appendChild(sel); form.appendChild(label);
   }
 
   const bar = document.createElement("div");
-  bar.style.marginTop = "8px";
-  bar.style.display = "flex";
-  bar.style.gap = "8px";
-  bar.style.justifyContent = "flex-end";
+  bar.style.cssText = "margin-top:8px;display:flex;gap:8px;justify-content:flex-end;";
 
   const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.textContent = "Cancel";
-  cancel.style.padding = "6px 10px";
+  cancel.type = "button"; cancel.textContent = "Cancel"; cancel.style.padding = "6px 10px";
   cancel.onclick = () => document.body.removeChild(overlay);
 
   const apply = document.createElement("button");
-  apply.type = "button";
-  apply.textContent = "Apply";
-  apply.style.padding = "6px 10px";
-  apply.style.border = "1px solid #d1d5db";
-  apply.style.borderRadius = "8px";
-  apply.style.background = "#fff";
+  apply.type = "button"; apply.textContent = "Apply";
+  apply.style.cssText = "padding:6px 10px;border:1px solid #d1d5db;border-radius:8px;background:#fff;";
   apply.onclick = () => {
     const mapping: Mapping = {
       Name: selects.Name!.value,
@@ -351,16 +263,12 @@ async function ensureMappingViaDrawer(
   rows: string[][],
   guess: Partial<Mapping>
 ): Promise<Mapping> {
-  // Prefer real modal if present
+  // Prefer your modal if present
   if (typeof (_maybeModal as any) === "function") {
-    return new Promise<Mapping>((resolve) => {
-      (_maybeModal as any)(headers, (m: Mapping) => resolve(m), guess, rows);
-    });
+    return new Promise<Mapping>((resolve) => (_maybeModal as any)(headers, (m: Mapping) => resolve(m), guess, rows));
   }
-  // fallback drawer
-  return new Promise<Mapping>((resolve) => {
-    buildFallbackMapDrawer(headers, guess, resolve);
-  });
+  // Fallback drawer
+  return new Promise<Mapping>((resolve) => buildFallbackMapDrawer(headers, guess, resolve));
 }
 
 /* ------------------------ MATERIALS UPLOAD + AUTOPACK --------------------- */
@@ -378,34 +286,34 @@ on(Events.MATERIALS_LOADED, (payload) => {
   if (lastParts.length) void repackAndRender();
 });
 
-/* -------------------------- PACK + SVG LISTENERS -------------------------- */
+/* ----------------------------- SVG MOUNT/OVERLAY -------------------------- */
 
 on(Events.LAYOUTS_READY, (payload) => {
   const { sheets = [] as SheetLayout[] } = payload ?? { sheets: [] as SheetLayout[] };
-  // Inline (dev) render
+  // Keep dev inline mount alive (optional)
   if (svgContainer) {
     svgContainer.innerHTML = "";
     createBoardPager(svgContainer, sheets);
   }
-  // Full-screen overlay if requested
+  // Open overlay if Optimize flow requested
   if (showSvgAfterPack) {
     showSvgAfterPack = false;
     openSvgModal(sheets);
   }
 });
 
-/* --------------------- PART ACTIONS from boardSvg events ------------------ */
+/* --------------------- SVG → part actions popover wiring ------------------ */
 
-on(Events.PART_CLICKED, ({ pid, part }) => {
+on(Events.PART_CLICKED, ({ pid, part }: any) => {
   if (!pid || !part) return;
-  openSvgPartActionModal(part as unknown as NestablePart, pid);
+  openSvgPartActionModal(part, pid);
 });
-on(Events.PART_PRINT_REQUEST, ({ pid }) => {
+on(Events.PART_PRINT_REQUEST, ({ pid }: any) => {
   if (!pid) return;
   markPrinted(pid);
   emit(Events.PART_STATUS_CHANGED, { pid, printed: true });
 });
-on(Events.PART_UNDO_PRINT_REQUEST, ({ pid }) => {
+on(Events.PART_UNDO_PRINT_REQUEST, ({ pid }: any) => {
   if (!pid) return;
   undoPrinted(pid);
   emit(Events.PART_STATUS_CHANGED, { pid, printed: false });
@@ -428,7 +336,6 @@ uploadBtn?.addEventListener("click", () => {
 /* ----------------------------- MAIN PROCESSING ---------------------------- */
 
 async function handleCuttingList(file: File | null) {
-  clearPreview(); // keep base page empty — we show the Components modal instead
   if (!file) {
     setStatus("err", "No file uploaded");
     showFileName("No file chosen");
@@ -439,13 +346,15 @@ async function handleCuttingList(file: File | null) {
   try {
     const text = await file.text();
     const { headers, rows, delimiter } = parseCsv(text);
+
     if (!headers || headers.length === 0) {
       setStatus("err", "Could not detect a header row. Check the first line of your CSV.");
       return;
     }
+
     setStatus("ok", `Loaded ${rows.length.toLocaleString()} row(s). Delimiter detected: "${delimiter}"`);
 
-    // seed guess with last mapping
+    // Seed auto-map with last saved mapping (if any)
     const savedDefaults: Partial<Mapping> | null = (() => {
       try { return JSON.parse(localStorage.getItem("oc:lastMapping") || "null"); }
       catch { return null; }
@@ -456,14 +365,15 @@ async function handleCuttingList(file: File | null) {
     try { localStorage.setItem("oc:lastMapping", JSON.stringify(mapping)); } catch {}
 
     const normalized = normalizeRows(headers, rows, mapping);
-    if (!normalized.length) {
+    if (normalized.length === 0) {
       setStatus("err", "Mapping applied, but no valid rows were produced (check required fields).");
       return;
     }
 
+    // Store parts and open Components modal (no inline list)
     lastParts = normalized.slice();
     setStatus("ok", `Mapped to ${lastParts.length.toLocaleString()} part(s).`);
-    openComponentsModal(lastParts); // show the handler
+    openComponentsModal(lastParts);
   } catch (err: any) {
     console.error(err);
     setStatus("err", `Failed to read CSV: ${err?.message ?? err}`);
@@ -474,6 +384,7 @@ async function handleCuttingList(file: File | null) {
 
 async function repackAndRender() {
   const boards = getBoards();
+
   if (!boards.length) {
     setStatus("err", "No boards loaded. Upload your Master Materials CSV first.");
     return;
@@ -485,29 +396,31 @@ async function repackAndRender() {
 
   const s = getSettings();
 
-  const fitsAnyBoard = (p: NestablePart) => {
-    for (const b of boards) {
-      const wA = Math.max(0, (b.width ?? 0)  - 2 * s.margin);
-      const hA = Math.max(0, (b.height ?? 0) - 2 * s.margin);
+  // deterministic fit check
+  const fitsAnyBoard = (p: NestablePart, bs: typeof boards, margin: number) => {
+    for (const b of bs) {
+      const wA = Math.max(0, (b.width ?? 0)  - 2 * margin);
+      const hA = Math.max(0, (b.height ?? 0) - 2 * margin);
       if ((p.w <= wA && p.h <= hA) || (p.h <= wA && p.w <= hA)) return true;
     }
     return false;
   };
-  const offenders = lastParts.filter(p => !fitsAnyBoard(p));
+
+  const offenders = lastParts.filter(p => !fitsAnyBoard(p, boards, s.margin));
   if (offenders.length === lastParts.length) {
-    setStatus("err", "No parts fit the available boards (check units/margins).");
+    const show = offenders.slice(0, 6).map(p => `${p.name ?? p.id ?? "part"} (${Math.round(p.w)}×${Math.round(p.h)})`);
+    const boardSamples = boards.slice(0, 3).map(b => `${Math.round(b.width)}×${Math.round(b.height)}`);
+    setStatus("err", `No parts fit any board. Examples: ${show.join(", ")}. Boards: ${boardSamples.join(", ")}. Check Length/Width and margins.`);
     return;
   }
 
   const tryPack = (parts: NestablePart[], ignoreTags: boolean): PackResult => {
     const P = ignoreTags ? parts.map(p => ({ ...p, materialTag: undefined })) : parts;
     return packPartsToSheets(boards, P, {
-      kerf: s.kerf,
-      margin: s.margin,
-      heuristic: "BSSF",
-      fallbackThreshold: 0.65,
+      kerf: s.kerf, margin: s.margin, heuristic: "BSSF", fallbackThreshold: 0.65,
     });
   };
+
   const flattenPack = (p: PackResult): SheetLayout[] => {
     if (hasByMaterial(p)) return (Object.values(p.byMaterial) as SheetLayout[][]).flat();
     if (hasSheets(p))     return (p as import("./nesting/types").PackResultFlat).sheets;
@@ -516,111 +429,95 @@ async function repackAndRender() {
 
   let pack = tryPack(lastParts, false);
   let flatSheets = flattenPack(pack);
-  if (flatSheets.length === 0) {
-    setStatus("neutral", "No placements with material matching; retrying without material tags…");
+  if (!flatSheets.length) {
+    setStatus("neutral", "No placements with material matching; retrying without tags…");
     pack = tryPack(lastParts, true);
     flatSheets = flattenPack(pack);
   }
 
   lastPack = pack;
+
   if (flatSheets.length) {
     setStatus("ok", `Generated ${flatSheets.length} sheet(s).`);
     emit(Events.LAYOUTS_READY, { sheets: flatSheets });
   } else {
-    setStatus("err", "Packing produced no sheets (check tags / copies / sizes).");
+    setStatus("err", "No sheets produced. Likely blocked by tags or copies=0.");
   }
 }
 
 /* ----------------------------- COMPONENTS MODAL --------------------------- */
 
 function openComponentsModal(parts: NestablePart[]) {
-  // Remove any existing
+  // Replace any existing
   document.querySelectorAll("#oc-components-overlay").forEach((n) => n.remove());
 
   const overlay = document.createElement("div");
   overlay.id = "oc-components-overlay";
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.zIndex = "2147483200";
-  overlay.style.background = "rgba(15,23,42,0.35)";
-  overlay.style.display = "grid";
-  overlay.style.placeItems = "center";
+  overlay.style.cssText = "position:fixed;inset:0;z-index:2147483200;background:rgba(15,23,42,0.35);display:grid;place-items:center;";
 
   const modal = document.createElement("div");
-  modal.style.width = "min(1200px, 96vw)";
-  modal.style.height = "min(90vh, 900px)";
-  modal.style.background = "#ffffff";
-  modal.style.borderRadius = "12px";
-  modal.style.boxShadow = "0 40px 100px rgba(0,0,0,0.45)";
-  modal.style.display = "grid";
-  modal.style.gridTemplateRows = "auto 1fr auto";
-  modal.style.gap = "10px";
-  modal.style.padding = "12px";
+  modal.style.cssText = "width:min(1200px,96vw);height:min(90vh,900px);background:#ffffff;border-radius:12px;box-shadow:0 40px 100px rgba(0,0,0,0.45);display:grid;grid-template-rows:auto 1fr auto;gap:10px;padding:12px;";
 
   const header = document.createElement("div");
-  header.style.display = "flex";
-  header.style.alignItems = "center";
-  header.style.justifyContent = "space-between";
-  header.style.gap = "8px";
+  header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;";
   const h = document.createElement("h3");
   h.textContent = `Components (${parts.length.toLocaleString()})`;
-  h.style.margin = "0";
-  h.style.fontSize = "18px";
-  h.style.fontWeight = "800";
+  h.style.margin = "0"; h.style.fontSize = "18px"; h.style.fontWeight = "800";
   header.appendChild(h);
 
   const body = document.createElement("div");
-  body.style.overflow = "auto";
-  body.style.padding = "4px";
-  body.appendChild(buildEditableComponentsTable(parts));
+  body.style.cssText = "overflow:auto;padding:4px;";
+  body.appendChild(buildEditableTable(parts));
 
   const footer = document.createElement("div");
-  footer.style.display = "flex";
-  footer.style.justifyContent = "space-between";
-  footer.style.gap = "8px";
+  footer.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
 
   const left = document.createElement("div");
-  left.style.display = "flex"; left.style.gap = "8px";
-  const addBtn = pill("Add Component", () => addComponentRow(body, parts));
-  left.append(addBtn);
+  left.style.cssText = "display:flex;gap:8px;";
+  left.append(pill("Add Component", () => addComponentRow(body, parts)));
 
   const right = document.createElement("div");
-  right.style.display = "flex"; right.style.gap = "8px";
-  const closeBtn = pill("Close", () => overlay.remove());
-  const optimizeBtn = primary("Optimize →", async () => {
-    overlay.remove();
-    showSvgAfterPack = true;     // trigger overlay open after pack
-    await repackAndRender();
-  });
-  right.append(closeBtn, optimizeBtn);
+  right.style.cssText = "display:flex;gap:8px;";
+  right.append(
+    pill("Close", () => overlay.remove()),
+    primary("Optimize →", async () => { overlay.remove(); showSvgAfterPack = true; await repackAndRender(); })
+  );
+
+  footer.append(left, right);
 
   modal.append(header, body, footer);
-  footer.append(left, right);
   overlay.appendChild(modal);
   overlay.addEventListener("click", (e) => { if (e.target === overlay) overlay.remove(); });
-  window.addEventListener("keydown", function onEsc(e) {
-    if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); }
-  });
+  window.addEventListener("keydown", function onEsc(e) { if (e.key === "Escape") { overlay.remove(); window.removeEventListener("keydown", onEsc); } });
   document.body.appendChild(overlay);
 }
 
-function buildEditableComponentsTable(parts: NestablePart[]) {
-  // Compact, touch-friendly table. Shows up to notes2 (as requested) + Details
+function mainColumnsFromParts(parts: NestablePart[]): string[] {
+  // Ensure core editable columns + edging + notes
+  const keys = new Set<string>();
+  parts.slice(0, 50).forEach(p => Object.keys(p as any).forEach(k => keys.add(k)));
+  const order = [
+    "name","materialTag","material","h","w","qty","edging","edgeTop","edgeRight","edgeBottom","edgeLeft","notes1","notes2"
+  ];
+  const cols: string[] = [];
+  for (const k of order) if (keys.has(k)) cols.push(k);
+  // Ensure core exist even if missing
+  for (const k of ["name","materialTag","h","w","qty","notes1","notes2"]) if (!cols.includes(k)) cols.push(k);
+  return cols;
+}
+
+function buildEditableTable(parts: NestablePart[]) {
+  const cols = mainColumnsFromParts(parts);
+
   const table = document.createElement("table");
-  table.style.width = "100%";
-  table.style.borderCollapse = "separate";
-  table.style.borderSpacing = "0 6px";
+  table.style.cssText = "width:100%;border-collapse:separate;border-spacing:0 6px;";
 
   const thead = document.createElement("thead");
   const trh = document.createElement("tr");
-  const headers = ["Name", "Material/Tag", "Length", "Width", "Qty", "Notes1", "Notes2", ""];
-  for (const label of headers) {
+  for (const c of cols.concat([""])) {
     const th = document.createElement("th");
-    th.textContent = label;
-    th.style.textAlign = "left";
-    th.style.padding = "6px 8px";
-    th.style.fontSize = "12px";
-    th.style.color = "#334155";
+    th.textContent = c === "h" ? "Length" : c === "w" ? "Width" : c === "" ? "" : c[0].toUpperCase() + c.slice(1);
+    th.style.cssText = "text-align:left;padding:6px 8px;font-size:12px;color:#334155;";
     trh.appendChild(th);
   }
   thead.appendChild(trh);
@@ -629,58 +526,34 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
   const tbody = document.createElement("tbody");
   parts.forEach((p) => {
     const tr = document.createElement("tr");
-    tr.style.background = "#f8fafc";
-    tr.style.border = "1px solid #e5e7eb";
+    tr.style.cssText = "background:#f8fafc;border:1px solid #e5e7eb;";
 
     const td = (content: HTMLElement | string) => {
       const cell = document.createElement("td");
       if (typeof content === "string") cell.textContent = content;
       else cell.appendChild(content);
-      cell.style.padding = "6px 8px";
-      cell.style.borderTop = "1px solid #e5e7eb";
-      cell.style.borderBottom = "1px solid #e5e7eb";
+      cell.style.cssText = "padding:6px 8px;border-top:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;";
       return cell;
     };
 
-    const input = (val: string | number, type: "text" | "number" = "text", step?: string, onCommit?: (v: any) => void) => {
+    const makeInput = (key: string) => {
       const i = document.createElement("input");
-      i.type = type;
-      if (type === "number" && step) i.step = step;
-      i.value = String(val ?? "");
-      i.style.padding = "6px 8px";
-      i.style.border = "1px solid #cbd5e1";
-      i.style.borderRadius = "8px";
-      i.style.width = "100%";
-      i.addEventListener("change", () => {
-        const v = (i.type === "number") ? Number(i.value) : i.value;
-        onCommit?.(v);
-      });
+      i.type = ["h","w","qty"].includes(key) ? "number" : "text";
+      if (i.type === "number") i.step = key === "qty" ? "1" : "1";
+      i.value = String((p as any)[key] ?? "");
+      i.style.cssText = "padding:6px 8px;border:1px solid #cbd5e1;border-radius:8px;width:100%;";
+      i.onchange = () => ((p as any)[key] = i.type === "number" ? Number(i.value || 0) : i.value);
       return i;
     };
 
-    const nameI = input(p.name ?? (p as any).id ?? "", "text", undefined, (v) => { p.name = v; });
-    const matI = input((p as any).materialTag ?? (p as any).material ?? "", "text", undefined,
-      (v) => { (p as any).materialTag = v; (p as any).material = v; });
-    const lenI = input(p.h, "number", "1", (v) => { p.h = v; });
-    const widI = input(p.w, "number", "1", (v) => { p.w = v; });
-    const qtyI = input((p as any).qty ?? 1, "number", "1", (v) => { (p as any).qty = v; });
-    const n1I  = input((p as any).notes1 ?? "", "text", undefined, (v) => { (p as any).notes1 = v; });
-    const n2I  = input((p as any).notes2 ?? "", "text", undefined, (v) => { (p as any).notes2 = v; });
+    for (const c of cols) tr.appendChild(td(makeInput(c)));
 
     const detailsBtn = document.createElement("button");
     detailsBtn.textContent = "Details";
-    detailsBtn.style.padding = "6px 10px";
-    detailsBtn.style.border = "1px solid #cbd5e1";
-    detailsBtn.style.borderRadius = "8px";
-    detailsBtn.style.background = "#fff";
-    detailsBtn.style.cursor = "pointer";
-    detailsBtn.onclick = () =>
-      openSvgPartActionModal(p, `list-${(p as any).id ?? p.name ?? Math.random().toString(36).slice(2)}`);
+    detailsBtn.style.cssText = "padding:6px 10px;border:1px solid #cbd5e1;border-radius:8px;background:#fff;cursor:pointer;";
+    detailsBtn.onclick = () => openSvgPartActionModal(p, `list-${p.id ?? p.name ?? Math.random().toString(36).slice(2)}`);
+    tr.appendChild(td(detailsBtn));
 
-    tr.append(
-      td(nameI), td(matI), td(lenI), td(widI), td(qtyI), td(n1I), td(n2I),
-      td(detailsBtn)
-    );
     tbody.appendChild(tr);
   });
   table.appendChild(tbody);
@@ -689,92 +562,49 @@ function buildEditableComponentsTable(parts: NestablePart[]) {
 
 function addComponentRow(body: HTMLElement, parts: NestablePart[]) {
   const p: NestablePart = {
-    id: `new-${Date.now()}`,
-    name: "",
-    w: 0,
-    h: 0,
-    qty: 1,
-    materialTag: "",
-    notes1: "",
-    notes2: "",
+    id: `new-${Date.now()}`, name: "", w: 0, h: 0, qty: 1, materialTag: "", notes1: "", notes2: "",
   } as any;
   parts.push(p);
   body.innerHTML = "";
-  body.appendChild(buildEditableComponentsTable(parts));
+  body.appendChild(buildEditableTable(parts));
 }
 
-/* -------------------------------- SVG MODAL ------------------------------- */
+/* -------------------------------- SVG OVERLAY ------------------------------ */
 
 function openSvgModal(sheets: SheetLayout[]) {
   document.querySelectorAll("#oc-svg-overlay").forEach((n) => n.remove());
 
   const overlay = document.createElement("div");
   overlay.id = "oc-svg-overlay";
-  overlay.style.position = "fixed";
-  overlay.style.inset = "0";
-  overlay.style.background = "rgba(15,23,42,0.25)";
-  overlay.style.zIndex = "2147483300";
-  overlay.style.display = "grid";
-  overlay.style.gridTemplateRows = "auto 1fr";
-  overlay.style.backdropFilter = "blur(1px)";
+  overlay.style.cssText = "position:fixed;inset:0;background:rgba(15,23,42,0.25);z-index:2147483300;display:grid;grid-template-rows:auto 1fr;backdrop-filter:blur(1px);";
 
-  // Top bar with Back + material tabs + sheet buttons
+  // Top bar
   const topBar = document.createElement("div");
-  topBar.style.display = "grid";
-  topBar.style.gridTemplateColumns = "auto 1fr auto";
-  topBar.style.alignItems = "center";
-  topBar.style.gap = "8px";
-  topBar.style.padding = "8px";
-  topBar.style.background = "#ffffff";
-  topBar.style.borderBottom = "1px solid #e5e7eb";
+  topBar.style.cssText = "display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding:8px;background:#ffffff;border-bottom:1px solid #e5e7eb;";
 
-  const back = pill("← Back", () => {
-    overlay.remove();
-    openComponentsModal(lastParts);
-  });
+  const back = pill("← Back", () => { overlay.remove(); openComponentsModal(lastParts); });
   topBar.appendChild(back);
 
   const tabs = document.createElement("div");
-  tabs.style.display = "flex";
-  tabs.style.gap = "6px";
-  tabs.style.flexWrap = "wrap";
+  tabs.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;";
   const rightBox = document.createElement("div");
-  rightBox.style.display = "flex";
-  rightBox.style.gap = "6px";
-
+  rightBox.style.cssText = "display:flex;gap:6px;";
   topBar.append(tabs, rightBox);
 
   const content = document.createElement("div");
-  content.style.background = "#f3f4f6";
-  content.style.display = "grid";
-  content.style.gridTemplateColumns = "1fr";
-  content.style.gridTemplateRows = "1fr";
-  content.style.padding = "10px";
+  content.style.cssText = "background:#f3f4f6;display:grid;grid-template-columns:1fr;grid-template-rows:1fr;padding:10px;";
 
-  // canvas area
   const frame = document.createElement("div");
-  frame.style.background = "#ffffff";
-  frame.style.border = "1px solid #cbd5e1";
-  frame.style.borderRadius = "10px";
-  frame.style.overflow = "hidden";
-  frame.style.margin = "0 auto";
-  frame.style.width = "min(96vw, 1400px)";
-  frame.style.height = "min(78vh, 820px)"; // landscape container
-  frame.style.display = "grid";
-  frame.style.placeItems = "center";
-
+  frame.style.cssText = "background:#ffffff;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;margin:0 auto;width:min(96vw,1400px);height:min(78vh,820px);display:grid;place-items:center;";
   const mount = document.createElement("div");
-  mount.style.width = "100%";
-  mount.style.height = "100%";
-  mount.style.display = "grid";
-  mount.style.placeItems = "center";
+  mount.style.cssText = "width:100%;height:100%;display:grid;place-items:center;";
   frame.appendChild(mount);
-
   content.appendChild(frame);
 
   overlay.append(topBar, content);
+  document.body.appendChild(overlay);
 
-  // Group sheets by a material-ish key
+  // Group by material-ish key
   const groups = groupByMaterial(sheets);
   const keys = Object.keys(groups);
   let activeKey = keys[0] ?? "All";
@@ -785,19 +615,8 @@ function openSvgModal(sheets: SheetLayout[]) {
     for (const k of keys) {
       const b = document.createElement("button");
       b.textContent = k;
-      b.style.padding = "6px 10px";
-      b.style.border = "1px solid #cbd5e1";
-      b.style.borderRadius = "999px";
-      b.style.background = k === activeKey ? "#3b82f6" : "#fff";
-      b.style.color = k === activeKey ? "#fff" : "#334155";
-      b.style.cursor = "pointer";
-      b.onclick = () => {
-        activeKey = k;
-        activeIdx = 0;
-        renderTabs();
-        renderSheetButtons();
-        draw();
-      };
+      b.style.cssText = `padding:6px 10px;border:1px solid #cbd5e1;border-radius:999px;cursor:pointer;${k===activeKey?"background:#3b82f6;color:#fff;":"background:#fff;color:#334155;"}`;
+      b.onclick = () => { activeKey = k; activeIdx = 0; renderTabs(); renderSheetButtons(); draw(); };
       tabs.appendChild(b);
     }
   }
@@ -808,12 +627,7 @@ function openSvgModal(sheets: SheetLayout[]) {
     arr.forEach((_s, i) => {
       const b = document.createElement("button");
       b.textContent = `Sheet ${i + 1}`;
-      b.style.padding = "6px 10px";
-      b.style.border = "1px solid #cbd5e1";
-      b.style.borderRadius = "10px";
-      b.style.background = i === activeIdx ? "#1f2937" : "#fff";
-      b.style.color = i === activeIdx ? "#fff" : "#334155";
-      b.style.cursor = "pointer";
+      b.style.cssText = `padding:6px 10px;border:1px solid #cbd5e1;border-radius:10px;cursor:pointer;${i===activeIdx?"background:#1f2937;color:#fff;":"background:#fff;color:#334155;"}`;
       b.onclick = () => { activeIdx = i; draw(); renderSheetButtons(); };
       rightBox.appendChild(b);
     });
@@ -825,10 +639,7 @@ function openSvgModal(sheets: SheetLayout[]) {
     const sheet = arr[activeIdx];
     if (!sheet) return;
     const host = document.createElement("div");
-    host.style.width = "100%";
-    host.style.height = "100%";
-    host.style.display = "grid";
-    host.style.placeItems = "center";
+    host.style.cssText = "width:100%;height:100%;display:grid;place-items:center;";
     mount.appendChild(host);
     renderBoardSvg(host, sheet, activeIdx);
   }
@@ -836,8 +647,6 @@ function openSvgModal(sheets: SheetLayout[]) {
   renderTabs();
   renderSheetButtons();
   draw();
-
-  document.body.appendChild(overlay);
 }
 
 function groupByMaterial(sheets: SheetLayout[]): Record<string, SheetLayout[]> {
@@ -860,10 +669,7 @@ function pill(label: string, onClick: () => void) {
   const b = document.createElement("button");
   b.type = "button";
   b.textContent = label;
-  b.style.cssText = `
-    padding: 8px 12px; border:1px solid #cbd5e1; border-radius:999px; cursor:pointer;
-    background:#fff; color:#334155;
-  `;
+  b.style.cssText = "padding:8px 12px;border:1px solid #cbd5e1;border-radius:999px;cursor:pointer;background:#fff;color:#334155;";
   b.onclick = onClick;
   return b;
 }
@@ -871,10 +677,7 @@ function primary(label: string, onClick: () => void) {
   const b = document.createElement("button");
   b.type = "button";
   b.textContent = label;
-  b.style.cssText = `
-    padding: 8px 14px; border:1px solid #60a5fa; border-radius:10px; cursor:pointer;
-    background: linear-gradient(180deg, #93c5fd, #3b82f6); color:#fff; font-weight:700;
-  `;
+  b.style.cssText = "padding:8px 14px;border:1px solid #60a5fa;border-radius:10px;cursor:pointer;background:linear-gradient(180deg,#93c5fd,#3b82f6);color:#fff;font-weight:700;";
   b.onclick = onClick;
   return b;
 }

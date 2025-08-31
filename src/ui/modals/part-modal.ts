@@ -1,5 +1,5 @@
 // src/ui/modals/part-modal.ts
-import { emit, Events } from "../../events";
+import { on, emit, Events } from "../../events";
 import type { PlacedPart } from "../../nesting/types";
 
 export function openPartModal(part: PlacedPart, pid: string) {

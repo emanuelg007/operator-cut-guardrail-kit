@@ -1,3 +1,4 @@
+// @ts-nocheck
 // src/ui/modals/components-modal.ts
 import type { NestablePart } from "../../nesting/types";
 

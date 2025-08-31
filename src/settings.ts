@@ -1,7 +1,7 @@
 // src/ui/settings.ts
 // Settings modal UI (touch-friendly). Works with state/settings exported getSettings/setSettings.
 
-import { getSettings, setSettings } from "../state/settings";
+import { getSettings, setSettings } from "./state/settings";
 
 /** Back-compat inline hook — we just show the modal now. */
 export function initSettingsUI(_container: HTMLElement) {

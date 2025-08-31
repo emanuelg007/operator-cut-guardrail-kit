@@ -1,21 +1,12 @@
-/* src/render/boardSvg.ts — full replacement
-   - Landscape-by-default viewport
-   - Bold strokes; labels inside parts; board dims outside
-   - Part selection + double-click/tap → PART_CLICKED
-   - Printed state color; dashed “cut line”
-   - Edging legend (uses internal defaults if edge colors missing from settings)
-*/
-
+// src/render/boardSvg.ts
 import type { SheetLayout, PlacedPart } from "../nesting/types";
 import { getSettings } from "../state/settings";
 import { on, emit, Events } from "../events";
 import { isPrinted } from "../state/partStatus";
 
-/** Simple pager (legacy inline view in #board-svg) */
+/** Toolbar + one-at-a-time sheet viewer (kept for inline dev preview) */
 export function createBoardPager(host: HTMLElement, sheets: SheetLayout[]) {
   host.innerHTML = "";
-  if (!sheets.length) return;
-
   let idx = 0;
 
   const bar = document.createElement("div");
@@ -37,9 +28,8 @@ export function createBoardPager(host: HTMLElement, sheets: SheetLayout[]) {
   host.appendChild(bar);
 
   const mount = document.createElement("div");
-  // landscape container
-  mount.style.cssText =
-    "width:100%;height:min(78vh,820px);background:#f3f4f6;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;";
+  // Landscape viewing area with fixed height
+  mount.style.cssText = "width:100%;height:min(78vh,820px);background:#f3f4f6;border:1px solid #cbd5e1;border-radius:10px;overflow:hidden;";
   host.appendChild(mount);
 
   function draw() {
@@ -53,13 +43,12 @@ export function createBoardPager(host: HTMLElement, sheets: SheetLayout[]) {
   on(Events.SETTINGS_UPDATED, () => draw());
 }
 
-/** Render a single sheet (used by modal and pager). */
+/** Draw a single sheet (landscape, bold strokes, dims, legend, pan/zoom) */
 export function renderBoardSvg(host: HTMLElement, sheet: SheetLayout, sheetIdx = 0) {
   host.innerHTML = "";
   const S = getSettings();
   const V = S.svgStyle;
 
-  // Wrapper sized like a landscape viewport
   const wrap = document.createElement("div");
   wrap.style.cssText = "position:relative;width:100%;height:100%;background:#f3f4f6;";
   host.appendChild(wrap);
@@ -74,16 +63,16 @@ export function renderBoardSvg(host: HTMLElement, sheet: SheetLayout, sheetIdx =
 
   // Board outline
   const gBoard = gEl();
-  const board = rect(sheet.x ?? 0, sheet.y ?? 0, sheet.width, sheet.height, V.boardStroke, V.boardFill, V.boardStrokeWidth);
+  const board = rect(0, 0, sheet.width, sheet.height, V.boardStroke, V.boardFill, V.boardStrokeWidth);
   gBoard.appendChild(board);
   svg.appendChild(gBoard);
 
   // Board dimensions outside: top & right
-  const topTxt = txt(sheet.width / 2, -8, fmtLen(sheet.width, S.units), V.dimColor, S.svgFont);
+  const topTxt = txt(sheet.width / 2, -8, fmtLen(sheet.width, S.units), V.dimColor, S.svgFont, 1.0);
   topTxt.setAttribute("text-anchor", "middle");
   svg.appendChild(topTxt);
 
-  const rightTxt = txt(sheet.width + 8, sheet.height / 2, fmtLen(sheet.height, S.units), V.dimColor, S.svgFont);
+  const rightTxt = txt(sheet.width + 8, sheet.height / 2, fmtLen(sheet.height, S.units), V.dimColor, S.svgFont, 1.0);
   rightTxt.setAttribute("text-anchor", "start");
   rightTxt.setAttribute("transform", `rotate(90 ${sheet.width + 8} ${sheet.height / 2})`);
   svg.appendChild(rightTxt);
@@ -91,10 +80,10 @@ export function renderBoardSvg(host: HTMLElement, sheet: SheetLayout, sheetIdx =
   // Parts
   sheet.placed.forEach((p, i) => drawPart(svg, p, sheetIdx, i));
 
-  // Edging legend to the right (uses fallback colors if not present)
+  // Edging legend by the right side of the board
   drawLegend(svg, sheet.width + 40, 20);
 
-  // Click board to clear selection highlight
+  // Click board to clear selection
   board.addEventListener("click", () => {
     svg.querySelectorAll<SVGRectElement>("rect.oc-part.selected").forEach(el => {
       el.classList.remove("selected");
@@ -105,7 +94,7 @@ export function renderBoardSvg(host: HTMLElement, sheet: SheetLayout, sheetIdx =
 
   enablePanZoom(svg);
 
-  // Re-render on settings changes (if still mounted)
+  // Live re-render when settings change
   on(Events.SETTINGS_UPDATED, () => {
     if (!svg.isConnected) return;
     renderBoardSvg(host, sheet, sheetIdx);
@@ -142,8 +131,11 @@ function txt(x:number,y:number, content:string, color:string, font:{family:strin
   t.setAttribute("x", String(x)); t.setAttribute("y", String(y));
   t.textContent = content;
   t.setAttribute("fill", color);
-  t.setAttribute("font-size", String(Math.max(8, Math.round(font.size * scale))));
+  t.setAttribute("font-size", String(Math.max(10, Math.round(font.size * scale))));
   t.setAttribute("font-family", font.family);
+  t.setAttribute("paint-order", "stroke");
+  t.setAttribute("stroke", "#ffffff");
+  t.setAttribute("stroke-width", "0.6");
   return t as SVGTextElement;
 }
 function fmtLen(mm:number, units:"mm"|"in") {
@@ -163,7 +155,7 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
   const g = gEl();
 
   // Main part rect
-  const fill = isPrinted(pid) ? (V as any).partPrintedFill || "#2563eb" : V.partFill;
+  const fill = isPrinted(pid) ? V.partPrintedFill : V.partFill;
   const r = rect(p.x, p.y, p.w, p.h, V.partStroke, fill, Math.max(2, V.partStrokeWidth));
   r.classList.add("oc-part");
   r.setAttribute("data-pid", pid);
@@ -172,13 +164,13 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
   const highlight = () => {
     if (!r.classList.contains("selected")) {
       r.setAttribute("stroke", "#7c3aed");
-      r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth) + 1));
+      r.setAttribute("stroke-width", String(V.partStrokeWidth + 1));
     }
   };
   const unhighlight = () => {
     if (!r.classList.contains("selected")) {
       r.setAttribute("stroke", V.partStroke);
-      r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth)));
+      r.setAttribute("stroke-width", String(V.partStrokeWidth));
     }
   };
   g.addEventListener("mouseenter", () => { svg.style.cursor = "pointer"; highlight(); });
@@ -189,11 +181,11 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
     svg.querySelectorAll<SVGRectElement>("rect.oc-part.selected").forEach(el => {
       el.classList.remove("selected");
       el.setAttribute("stroke", V.partStroke);
-      el.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth)));
+      el.setAttribute("stroke-width", String(V.partStrokeWidth));
     });
     r.classList.add("selected");
     r.setAttribute("stroke", "#7c3aed");
-    r.setAttribute("stroke-width", String(Math.max(2, V.partStrokeWidth) + 1));
+    r.setAttribute("stroke-width", String(V.partStrokeWidth + 1));
   });
 
   const openDetails = () => emit(Events.PART_CLICKED, { pid, part: p, sheetIdx });
@@ -202,18 +194,14 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
 
   // Dashed “cut line” inset
   const inset = Math.max(0.5, S.kerf / 2);
-  const cut = rect(
-    p.x + inset, p.y + inset,
-    Math.max(0, p.w - 2*inset), Math.max(0, p.h - 2*inset),
-    V.cutLineColor, "none", Math.max(2, V.cutLineWidth)
-  );
+  const cut = rect(p.x + inset, p.y + inset, Math.max(0, p.w - 2*inset), Math.max(0, p.h - 2*inset), V.cutLineColor, "none", Math.max(2, V.cutLineWidth));
   cut.setAttribute("stroke-dasharray", "6 6");
   cut.setAttribute("pointer-events", "none");
 
   // Name centered along the long side (inside)
   const name = String(p.name ?? (p as any).id ?? "");
   const cx = p.x + p.w/2, cy = p.y + p.h/2;
-  const nameTxt = txt(cx, cy, name, V.labelColor, S.svgFont, 1.0);
+  const nameTxt = txt(cx, cy, name, V.labelColor, S.svgFont, 1.15);
   nameTxt.setAttribute("text-anchor", "middle");
   if (p.h > p.w) nameTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
 
@@ -222,11 +210,11 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
   const longStr = fmtLen(longIsW ? p.w : p.h, S.units);
   const shortStr = fmtLen(longIsW ? p.h : p.w, S.units);
 
-  const longTxt = txt(cx, cy + (longIsW ? p.h/2 - 10 : 0), longStr, V.dimColor, S.svgFont, 0.95);
+  const longTxt = txt(cx, cy + (longIsW ? p.h/2 - 10 : 0), longStr, V.dimColor, S.svgFont, 1.0);
   longTxt.setAttribute("text-anchor", "middle");
   if (!longIsW) longTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
 
-  const shortTxt = txt(cx + (longIsW ? p.w/2 - 10 : 0), cy, shortStr, V.dimColor, S.svgFont, 0.95);
+  const shortTxt = txt(cx + (longIsW ? p.w/2 - 10 : 0), cy, shortStr, V.dimColor, S.svgFont, 1.0);
   shortTxt.setAttribute("text-anchor", "middle");
   if (longIsW) shortTxt.setAttribute("transform", `rotate(-90 ${cx} ${cy})`);
 
@@ -237,8 +225,7 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
     r.appendChild(t);
   }
 
-  // Optional edging (simple: any "edging" string applies same style to all sides;
-  // or booleans edgeTop/Right/Bottom/Left)
+  // Optional edging
   drawEdging(svg, p);
 
   g.append(r, cut, nameTxt, longTxt, shortTxt);
@@ -246,20 +233,14 @@ function drawPart(svg: SVGSVGElement, p: PlacedPart, sheetIdx: number, i: number
 }
 
 function drawEdging(svg: SVGSVGElement, p: PlacedPart) {
-  const S = getSettings();
-  const V = S.svgStyle as any;
-
-  // Fallback edge colors if not present in settings
-  const edgeSolidColor     = V.edgeSolidColor     || V.partStroke || "#111827";
-  const edgeShortDashColor = V.edgeShortDashColor || V.dimColor   || "#334155";
-  const edgeLongDashColor  = V.edgeLongDashColor  || "#0ea5e9";
-  const edgeDotColor       = V.edgeDotColor       || "#ef4444";
-
+  const V = getSettings().svgStyle as any;
+  // Tolerate missing new edge colors in settings by defaulting to dimColor
+  const fallback = (c?: string) => c || getSettings().svgStyle.dimColor;
   const styles = {
-    solid: { col: edgeSolidColor,     dash: "" },
-    short: { col: edgeShortDashColor, dash: "6 4" },
-    long:  { col: edgeLongDashColor,  dash: "12 8" },
-    dot:   { col: edgeDotColor,       dash: "1 6" },
+    solid: { col: fallback((V as any).edgeSolidColor),     dash: "" },
+    short: { col: fallback((V as any).edgeShortDashColor), dash: "6 4" },
+    long:  { col: fallback((V as any).edgeLongDashColor),  dash: "12 8" },
+    dot:   { col: fallback((V as any).edgeDotColor),       dash: "1 6" },
   };
   const resolve = (s?: string) => {
     const v = (s || "").toLowerCase();
@@ -276,7 +257,7 @@ function drawEdging(svg: SVGSVGElement, p: PlacedPart) {
   const left = (p as any).edgeLeft ?? !!all;
   const st = resolve(all);
 
-  const lw = Math.max(2, S.svgStyle.partStrokeWidth);
+  const lw = Math.max(2, getSettings().svgStyle.partStrokeWidth);
   const x1 = p.x, y1 = p.y, x2 = p.x + p.w, y2 = p.y + p.h;
 
   if (top)    svg.appendChild(line(x1, y1, x2, y1, st.col, lw, st.dash));
@@ -288,17 +269,16 @@ function drawEdging(svg: SVGSVGElement, p: PlacedPart) {
 function drawLegend(svg: SVGSVGElement, x: number, y: number) {
   const S = getSettings();
   const V = S.svgStyle as any;
-
   const items = [
-    { name: "Solid",  col: V.edgeSolidColor     || V.partStroke || "#111827", dash: "" },
-    { name: "Short",  col: V.edgeShortDashColor || V.dimColor   || "#334155", dash: "6 4" },
-    { name: "Long",   col: V.edgeLongDashColor  || "#0ea5e9",                 dash: "12 8" },
-    { name: "Dotted", col: V.edgeDotColor       || "#ef4444",                 dash: "1 6" },
+    { name: "Solid",  col: (V as any).edgeSolidColor || V.dimColor,      dash: "" },
+    { name: "Short",  col: (V as any).edgeShortDashColor || V.dimColor,  dash: "6 4" },
+    { name: "Long",   col: (V as any).edgeLongDashColor || V.dimColor,   dash: "12 8" },
+    { name: "Dotted", col: (V as any).edgeDotColor || V.dimColor,        dash: "1 6" },
   ];
   items.forEach((it, i) => {
     const yy = y + i * 24;
     svg.appendChild(line(x, yy, x + 60, yy, it.col, 3, it.dash));
-    const label = txt(x + 70, yy + 4, it.name, V.dimColor || "#334155", S.svgFont, 0.9);
+    const label = txt(x + 70, yy + 4, it.name, V.dimColor, S.svgFont, 0.95);
     label.setAttribute("text-anchor", "start");
     svg.appendChild(label);
   });

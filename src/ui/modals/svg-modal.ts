@@ -1,3 +1,21 @@
+function mkBtn(label: string, onClick: () => void): HTMLButtonElement {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = label;
+  b.style.padding = "8px 12px";
+  b.style.border = "1px solid #cbd5e1";
+  b.style.borderRadius = "10px";
+  b.style.background = "#f8fafc";
+  b.style.cursor = "pointer";
+  b.onmouseenter = () => (b.style.background = "#eef2ff");
+  b.onmouseleave = () => (b.style.background = "#f8fafc");
+  b.onclick = onClick;
+  return b;
+}
+// Fallback for existing calls in this file:
+function button(label: string, onClick: () => void): HTMLButtonElement {
+  return mkBtn(label, onClick);
+}
 // src/ui/modals/svg-modal.ts
 import type { SheetLayout, PlacedPart } from "../../nesting/types";
 import { renderBoardSvg } from "../../render/boardSvg";
