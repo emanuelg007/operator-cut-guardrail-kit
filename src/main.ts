@@ -1,3 +1,4 @@
+console.log("BOOT: main.ts loaded");
 // src/main.ts
 import { parseCsv } from "./csv/parseCsv";
 import { normalizeRows, type Mapping } from "./csv/normalize";
@@ -680,4 +681,14 @@ function primary(label: string, onClick: () => void) {
   b.style.cssText = "padding:8px 14px;border:1px solid #60a5fa;border-radius:10px;cursor:pointer;background:linear-gradient(180deg,#93c5fd,#3b82f6);color:#fff;font-weight:700;";
   b.onclick = onClick;
   return b;
+}
+
+// Explicit navbar init (defensive)
+import { initNavbar } from "./ui/navbar";
+if (typeof window !== "undefined") {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => initNavbar(), { once: true });
+  } else {
+    initNavbar();
+  }
 }

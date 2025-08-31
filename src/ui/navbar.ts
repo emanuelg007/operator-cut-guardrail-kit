@@ -24,7 +24,7 @@ function mkBtn(label: string, onClick: () => void): HTMLButtonElement {
   return b;
 }
 
-function initNavbar() {
+export function initNavbar() {
   // Avoid duplicate bars
   if (document.getElementById("oc-navbar")) return;
 
